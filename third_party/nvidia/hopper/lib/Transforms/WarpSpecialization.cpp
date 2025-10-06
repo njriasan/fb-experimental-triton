@@ -23,6 +23,7 @@ bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 void doBufferAllocation(triton::FuncOp &funcOp);
 void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers);
 void doCodePartitionPost(triton::FuncOp &funcOp, unsigned numBuffers);
+void fuseTcgen05CommitBarriers(triton::FuncOp &funcOp);
 void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 void doPingPongSync(triton::FuncOp &funcOp, unsigned numWarpGroups);
 
@@ -146,6 +147,13 @@ public:
           << "// -----// WarpSpec internal IR Dump After: doCodePartition\n"
           << moduleOp << "\n\n\n";
     }
+    fuseTcgen05CommitBarriers(funcOp);
+    if (dumpIntermediateSteps) {
+      llvm::dbgs() << "// -----// WarpSpec internal IR Dump After: "
+                      "fuseTcgen05CommitBarriers\n"
+                   << moduleOp << "\n\n\n";
+    }
+
     if (!ForBlackWell) {
       doPingPongSync(funcOp, numWarpGroups);
       if (dumpIntermediateSteps) {
