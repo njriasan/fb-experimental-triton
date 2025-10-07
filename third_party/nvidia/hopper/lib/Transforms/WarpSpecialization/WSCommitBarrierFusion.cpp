@@ -54,16 +54,15 @@ collectCommitGroup(ttng::TCGen5CommitOp &commitOp,
 void fuseTcgen05CommitBarriers(tt::FuncOp &funcOp) {
   DenseSet<ttng::TCGen5CommitOp> seenCommits;
   SmallVector<SmallVector<ttng::TCGen5CommitOp>> commitGroups;
-  funcOp.walk([&](ttng::TCGen5CommitOp &commitOp) {
-    if (seenCommits.count(commitOp)) {
-      return;
-    }
-    auto commitGroup = collectCommitGroup(commitOp, seenCommits);
-    if (commitGroup.size() > 1) {
-      commitGroups.push_back(commitGroup);
+  funcOp.walk<mlir::WalkOrder::PreOrder>([&](ttng::TCGen5CommitOp commitOp) {
+    if (!seenCommits.count(commitOp)) {
+      auto commitGroup = collectCommitGroup(commitOp, seenCommits);
+      if (commitGroup.size() > 1) {
+        commitGroups.push_back(commitGroup);
+      }
     }
   });
-  for (auto commitGroup : commitGroups) {
+  for (auto &commitGroup : commitGroups) {
   }
 }
 
