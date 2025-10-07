@@ -3,6 +3,7 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 namespace tt = mlir::triton;
+namespace ttg = mlir::triton::gpu;
 namespace ttng = ::mlir::triton::nvidia_gpu;
 namespace mlir {
 
@@ -29,6 +30,33 @@ collectCommitGroup(ttng::TCGen5CommitOp &commitOp,
   return commitGroup;
 }
 
+std::tuple<ttg::LocalAllocOp, int>
+getAlloc(ttng::TCGen5CommitOp &commitOp,
+         ttg::WarpSpecializeOp &warpSpecializeOp) {
+  Value arg = commitOp->getOperand(0);
+  // Require passing the barrier as a arg.
+  // TODO: Generalize.
+  std::tuple<ttg::LocalAllocOp, int> invalidOutput = {nullptr, -1};
+  auto blockArg = dyn_cast<BlockArgument>(arg);
+  if (!blockArg) {
+    return invalidOutput;
+  }
+  auto block = blockArg.getOwner();
+  if (!block) {
+    return invalidOutput;
+  }
+  auto scopeOp = block->getParentOp();
+  if (!isa<ttg::WarpSpecializePartitionsOp>(scopeOp)) {
+    return invalidOutput;
+  }
+  // Load the actual arg
+  auto argNum = blockArg.getArgNumber();
+  auto argValue = warpSpecializeOp->getOperand(blockArg.getArgNumber());
+  Operation *op = argValue.getDefiningOp();
+  ttg::LocalAllocOp allocOp = dyn_cast<ttg::LocalAllocOp>(op);
+  return {allocOp, argNum};
+}
+
 // Fuse together the barriers used by repeated
 // tcgen05.commit operations. This works with the following
 // setup:
@@ -37,21 +65,34 @@ collectCommitGroup(ttng::TCGen5CommitOp &commitOp,
 // Right now we only support commit operations that are placed next
 // to each other in the IR, but in theory this can be extended.
 //
-// 2. For each candidate group, group together barriers based on the underlying
-// consumer(s). We will form a subgroup if the barrier:
+// 2. For each candidate group, group together barriers based on the
+// underlying consumer(s). We will form a subgroup if the barrier:
 //    a. Has identical pipelining state.
 //    b. Will occur with the same frequency. This requires an equivalent
 //    "nesting" with the same underlying condition.
 //    c. Has the same expected phase value.
 //
 // 3. For each subgroup, update the barriers based on the consumer's location.
-//    a. Within the same partition remove all waits but the earliest location in
-//    program order.
-//    b. Within different partitions unify all barriers to use the same source
-//    barrier buffer.
+//    a. Within the same partition remove all waits but the earliest location
+//    in program order. b. Within different partitions unify all barriers to
+//    use the same source barrier buffer.
 //
 // 4. Cleanup the code to remove the unused barriers.
 void fuseTcgen05CommitBarriers(tt::FuncOp &funcOp) {
+  // Extract the WarpSpecialize call.
+  // TODO: Check there is 1 warpSpec section.
+  ttg::WarpSpecializeOp warpSpecializeOp;
+  funcOp.walk([&](ttg::WarpSpecializeOp op) { warpSpecializeOp = op; });
+  // Only implemented for tcgen05.commit across warp spec.
+  if (!warpSpecializeOp) {
+    return;
+  }
+  // Collect partitions for easier handling.
+  ttg::WarpSpecializePartitionsOp partitionsOp;
+  funcOp.walk([&](ttg::WarpSpecializePartitionsOp op) { partitionsOp = op; });
+  if (!partitionsOp)
+    return;
+
   DenseSet<ttng::TCGen5CommitOp> seenCommits;
   SmallVector<SmallVector<ttng::TCGen5CommitOp>> commitGroups;
   funcOp.walk<mlir::WalkOrder::PreOrder>([&](ttng::TCGen5CommitOp commitOp) {
@@ -63,6 +104,21 @@ void fuseTcgen05CommitBarriers(tt::FuncOp &funcOp) {
     }
   });
   for (auto &commitGroup : commitGroups) {
+    // Track the allocation, ParititonArgNumber, and commit for each group.
+    SmallVector<std::tuple<ttg::LocalAllocOp, int, ttng::TCGen5CommitOp>>
+        allocInfo;
+    for (auto &commitOp : commitGroup) {
+      auto [allocOp, argNumber] = getAlloc(commitOp, warpSpecializeOp);
+      if (allocOp) {
+        allocInfo.push_back({allocOp, argNumber, commitOp});
+      }
+    }
+    // Find the users for each allocation in each partition.
+    for (auto &[allocOp, argNumber, commitOp] : allocInfo) {
+      for (auto &region : partitionsOp.getPartitionRegions()) {
+        Value arg = region.getArgument(argNumber);
+      }
+    }
   }
 }
 
