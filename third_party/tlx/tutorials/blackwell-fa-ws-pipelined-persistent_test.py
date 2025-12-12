@@ -235,7 +235,7 @@ def _join_n(xs):
 
 
 @triton.jit
-def _mask_scalar(qk, col_limit_right, s, i):
+def _mask_scalar_fwd(qk, col_limit_right, s, i):
     col_lim_right_s = col_limit_right - s
     col_lim_right_cur = max(col_lim_right_s, 0)
     mask = -1 << col_lim_right_cur
@@ -244,7 +244,16 @@ def _mask_scalar(qk, col_limit_right, s, i):
 
 
 @triton.jit
-def _apply_causal_mask(qk, col_limit_right, BLOCK_N: tl.constexpr):
+def _mask_scalar_bwd(qk, col_limit_right, s, i):
+    col_lim_right_s = col_limit_right - s
+    col_lim_right_cur = max(col_lim_right_s, 0)
+    mask = -1 << col_lim_right_cur
+    mask_i_bit = (mask & (1 << i)) == 0
+    return tl.where(mask_i_bit, qk, 0)
+
+
+@triton.jit
+def _apply_causal_mask(qk, col_limit_right, BLOCK_SIZE: tl.constexpr, IS_FWD: tl.constexpr):
     # Apply causal mask via a bitmask calculated for each block of 16 elements.
     # This allows the efficient R2P (register to predicate) instruction to be used at the SASS level.
     # Credit to Tri Dao,
@@ -252,10 +261,16 @@ def _apply_causal_mask(qk, col_limit_right, BLOCK_N: tl.constexpr):
     #
     # NOTE: We use map_elementiwse here in order to generate an interleaved sequence of instructions
     # that processes one element of qk at a time. This improves ptxas's resulting SASS.
-    offs_n = tl.arange(0, BLOCK_N)[None, :]
-    s = offs_n & ~0xF
-    i = offs_n & 0xF
-    return tl.map_elementwise(_mask_scalar, qk, col_limit_right, s, i)
+    if IS_FWD:
+        offs = tl.arange(0, BLOCK_SIZE)[None, :]
+    else:
+        offs = tl.arange(0, BLOCK_SIZE)[:, None]
+    s = offs & ~0xF
+    i = offs & 0xF
+    if IS_FWD:
+        return tl.map_elementwise(_mask_scalar_fwd, qk, col_limit_right, s, i)
+    else:
+        return tl.map_elementwise(_mask_scalar_bwd, qk, col_limit_right, s, i)
 
 
 @triton.jit
@@ -292,7 +307,7 @@ def _softmax_inner_loop(
 
         if STAGE == 2:
             col_limit_right = (offs_m - start_n + 1)[:, None]
-            qk = _apply_causal_mask(qk, col_limit_right, BLOCK_N)
+            qk = _apply_causal_mask(qk, col_limit_right, BLOCK_N, True)
 
         # compute m_i, p in registers
         m_ij = tl.maximum(m_i, tl.max(qk, 1) * qk_scale)
@@ -1158,7 +1173,6 @@ def _bwd_compute_inner_loop(
     REUSE_DP_FOR_DQ: tl.constexpr,
 ):
     start_block_n = start_n * BLOCK_N1
-    offs_n = start_block_n + tl.arange(0, BLOCK_N1)
     lo, hi = _get_unfused_bwd_loop_bounds(start_n, N_CTX, BLOCK_N1, STAGE)
     num_steps = (hi - lo) // BLOCK_M1
     for _ in range(num_steps):
@@ -1175,8 +1189,8 @@ def _bwd_compute_inner_loop(
 
         pT = tl.math.exp2(qkT - m[None, :])
         if STAGE == 1:
-            mask = offs_m[None, :] >= offs_n[:, None]
-            pT = tl.where(mask, pT, 0.0)
+            col_limit_right = (offs_m - start_block_n + 1)[None, :]
+            pT = _apply_causal_mask(pT, col_limit_right, BLOCK_N1, False)
 
         # ppT *= qk_scale
         ppT = pT
@@ -1409,7 +1423,6 @@ def _attn_bwd_ws(
                 do_out_dtype = tlx.dtype_of(desc_do)
                 q_out_dtype = tlx.dtype_of(desc_q)
                 if STAGE & 1:
-                    offs_n = start_block_n + tl.arange(0, BLOCK_N1)
                     lo, hi = _get_unfused_bwd_loop_bounds(start_n, N_CTX, BLOCK_N1, STAGE=4 - STAGE)
                     num_steps = (hi - lo) // BLOCK_M1
                     for _ in range(num_steps):
@@ -1426,8 +1439,8 @@ def _attn_bwd_ws(
 
                         pT = tl.math.exp2(qkT - m[None, :])
                         if STAGE == 3:
-                            mask = offs_m[None, :] >= offs_n[:, None]
-                            pT = tl.where(mask, pT, 0.0)
+                            col_limit_right = (offs_m - start_block_n + 1)[None, :]
+                            pT = _apply_causal_mask(pT, col_limit_right, BLOCK_N1, False)
 
                         # ppT *= qk_scale
                         ppT = pT
