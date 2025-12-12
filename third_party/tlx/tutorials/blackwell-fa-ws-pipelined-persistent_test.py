@@ -1113,6 +1113,7 @@ configs_bwd_tlx = [
             # BLOCK_M1.
             # Not all EPILOGUE_SUBTILE are viable with all BLOCK_M1
             # and H-DIM options, so we set those in the kernel as well.
+            # Same with DQ, although in general we want that to be 1.
             "BLOCK_N1": 128,
             "BLOCK_M2": 128,
             "BLOCK_N2": 128,
@@ -1121,8 +1122,6 @@ configs_bwd_tlx = [
             "NUM_BUFFERS_DO": 1,
             "NUM_BUFFERS_DS": 1,
             "NUM_BUFFERS_TMEM": 1,
-            # Don't subtile DQ since this seems to be the bottleneck
-            "DQ_SUBTILE": 1,
         },
         num_warps=4,
         num_stages=1,
@@ -1992,12 +1991,27 @@ class _attention(torch.autograd.Function):
             )
 
         stage = 3 if ctx.causal else 1
+        # Set subtiling to 4 and 1 when BLOCK_M1 == 128 and HEAD_DIM == 128
+        # tov avoid running out of shared memory.
         EPILOGUE_SUBTILE = 4 if ctx.BWD_BLOCK_M1 == 128 and ctx.HEAD_DIM == 128 else 2
+        DQ_SUBTILE = 4 if ctx.BWD_BLOCK_M1 == 128 and ctx.HEAD_DIM == 128 else 1
         _attn_bwd_ws[grid_persistent](
-            desc_q, desc_k, desc_v, ctx.sm_scale, desc_do, desc_dq, desc_dk, desc_dv,  #
-            M, delta,  #
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
-            N_HEAD, BATCH,  #
+            desc_q,
+            desc_k,
+            desc_v,
+            ctx.sm_scale,
+            desc_do,
+            desc_dq,
+            desc_dk,
+            desc_dv,  #
+            M,
+            delta,  #
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),  #
+            N_HEAD,
+            BATCH,  #
             N_CTX,  #
             BLK_SLICE_FACTOR=BLK_SLICE_FACTOR,  #
             HEAD_DIM=ctx.HEAD_DIM,  #
@@ -2005,6 +2019,7 @@ class _attention(torch.autograd.Function):
             BLOCK_M1=ctx.BWD_BLOCK_M1,  #
             EPILOGUE_SUBTILE=EPILOGUE_SUBTILE,  #
             GROUP_SIZE_M=ctx.GROUP_SIZE_M,  #
+            DQ_SUBTILE=DQ_SUBTILE,
         )
 
         return dq, dk, dv, None, None, None, None, None
