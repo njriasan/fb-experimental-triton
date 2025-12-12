@@ -1094,12 +1094,13 @@ def _bwd_host_descriptor_pre_hook_tlx(nargs):
     BLOCK_N1 = nargs["BLOCK_N1"]
     HEAD_DIM = nargs["HEAD_DIM"]
     EPILOGUE_SUBTILE = nargs["EPILOGUE_SUBTILE"]
+    DQ_SUBTILE = nargs["DQ_SUBTILE"]
 
     nargs["desc_q"].block_shape = [BLOCK_M1, HEAD_DIM]
     nargs["desc_do"].block_shape = [BLOCK_M1, HEAD_DIM]
     nargs["desc_v"].block_shape = [BLOCK_N1, HEAD_DIM]
     nargs["desc_k"].block_shape = [BLOCK_N1, HEAD_DIM]
-    nargs["desc_dq"].block_shape = [BLOCK_M1, HEAD_DIM // EPILOGUE_SUBTILE]
+    nargs["desc_dq"].block_shape = [BLOCK_M1, HEAD_DIM // DQ_SUBTILE]
     nargs["desc_dv"].block_shape = [BLOCK_N1, HEAD_DIM // EPILOGUE_SUBTILE]
     nargs["desc_dk"].block_shape = [BLOCK_N1, HEAD_DIM // EPILOGUE_SUBTILE]
 
@@ -1120,6 +1121,8 @@ configs_bwd_tlx = [
             "NUM_BUFFERS_DO": 1,
             "NUM_BUFFERS_DS": 1,
             "NUM_BUFFERS_TMEM": 1,
+            # Partition DQ since this seems to be the bottleneck
+            "DQ_SUBTILE": 1,
         },
         num_warps=4,
         num_stages=1,
@@ -1237,6 +1240,7 @@ def _attn_bwd_ws(
     NUM_BUFFERS_DS: tl.constexpr,
     NUM_BUFFERS_TMEM: tl.constexpr,
     EPILOGUE_SUBTILE: tl.constexpr,
+    DQ_SUBTILE: tl.constexpr,
     STAGE: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
 ):
@@ -1366,8 +1370,8 @@ def _attn_bwd_ws(
 
                     # wait for dq = tl.dot(tl.trans(dsT), k)
                     tlx.barrier_wait(dq_fulls[tmem_buf_id], tmem_phase)
-                    slice_size: tl.constexpr = HEAD_DIM // EPILOGUE_SUBTILE
-                    for slice_id in tl.static_range(EPILOGUE_SUBTILE):
+                    slice_size: tl.constexpr = HEAD_DIM // DQ_SUBTILE
+                    for slice_id in tl.static_range(DQ_SUBTILE):
                         dq_slice = tlx.local_slice(
                             dq_tiles[tmem_buf_id],
                             [0, slice_id * slice_size],
