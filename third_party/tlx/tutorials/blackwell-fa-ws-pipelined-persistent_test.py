@@ -1094,12 +1094,13 @@ def _bwd_host_descriptor_pre_hook_tlx(nargs):
     BLOCK_N1 = nargs["BLOCK_N1"]
     HEAD_DIM = nargs["HEAD_DIM"]
     EPILOGUE_SUBTILE = nargs["EPILOGUE_SUBTILE"]
+    DQ_SUBTILE = nargs["DQ_SUBTILE"]
 
     nargs["desc_q"].block_shape = [BLOCK_M1, HEAD_DIM]
     nargs["desc_do"].block_shape = [BLOCK_M1, HEAD_DIM]
     nargs["desc_v"].block_shape = [BLOCK_N1, HEAD_DIM]
     nargs["desc_k"].block_shape = [BLOCK_N1, HEAD_DIM]
-    nargs["desc_dq"].block_shape = [BLOCK_M1, HEAD_DIM // EPILOGUE_SUBTILE]
+    nargs["desc_dq"].block_shape = [BLOCK_M1, HEAD_DIM // DQ_SUBTILE]
     nargs["desc_dv"].block_shape = [BLOCK_N1, HEAD_DIM // EPILOGUE_SUBTILE]
     nargs["desc_dk"].block_shape = [BLOCK_N1, HEAD_DIM // EPILOGUE_SUBTILE]
 
@@ -1112,6 +1113,7 @@ configs_bwd_tlx = [
             # BLOCK_M1.
             # Not all EPILOGUE_SUBTILE are viable with all BLOCK_M1
             # and H-DIM options, so we set those in the kernel as well.
+            # Same with DQ, although in general we want that to be 1.
             "BLOCK_N1": 128,
             "BLOCK_M2": 128,
             "BLOCK_N2": 128,
@@ -1237,6 +1239,7 @@ def _attn_bwd_ws(
     NUM_BUFFERS_DS: tl.constexpr,
     NUM_BUFFERS_TMEM: tl.constexpr,
     EPILOGUE_SUBTILE: tl.constexpr,
+    DQ_SUBTILE: tl.constexpr,
     STAGE: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
 ):
@@ -1366,8 +1369,8 @@ def _attn_bwd_ws(
 
                     # wait for dq = tl.dot(tl.trans(dsT), k)
                     tlx.barrier_wait(dq_fulls[tmem_buf_id], tmem_phase)
-                    slice_size: tl.constexpr = HEAD_DIM // EPILOGUE_SUBTILE
-                    for slice_id in tl.static_range(EPILOGUE_SUBTILE):
+                    slice_size: tl.constexpr = HEAD_DIM // DQ_SUBTILE
+                    for slice_id in tl.static_range(DQ_SUBTILE):
                         dq_slice = tlx.local_slice(
                             dq_tiles[tmem_buf_id],
                             [0, slice_id * slice_size],
@@ -1988,12 +1991,27 @@ class _attention(torch.autograd.Function):
             )
 
         stage = 3 if ctx.causal else 1
+        # Set subtiling to 4 and 1 when BLOCK_M1 == 128 and HEAD_DIM == 128
+        # tov avoid running out of shared memory.
         EPILOGUE_SUBTILE = 4 if ctx.BWD_BLOCK_M1 == 128 and ctx.HEAD_DIM == 128 else 2
+        DQ_SUBTILE = 4 if ctx.BWD_BLOCK_M1 == 128 and ctx.HEAD_DIM == 128 else 1
         _attn_bwd_ws[grid_persistent](
-            desc_q, desc_k, desc_v, ctx.sm_scale, desc_do, desc_dq, desc_dk, desc_dv,  #
-            M, delta,  #
-            q.stride(0), q.stride(1), q.stride(2), q.stride(3),  #
-            N_HEAD, BATCH,  #
+            desc_q,
+            desc_k,
+            desc_v,
+            ctx.sm_scale,
+            desc_do,
+            desc_dq,
+            desc_dk,
+            desc_dv,  #
+            M,
+            delta,  #
+            q.stride(0),
+            q.stride(1),
+            q.stride(2),
+            q.stride(3),  #
+            N_HEAD,
+            BATCH,  #
             N_CTX,  #
             BLK_SLICE_FACTOR=BLK_SLICE_FACTOR,  #
             HEAD_DIM=ctx.HEAD_DIM,  #
@@ -2001,6 +2019,7 @@ class _attention(torch.autograd.Function):
             BLOCK_M1=ctx.BWD_BLOCK_M1,  #
             EPILOGUE_SUBTILE=EPILOGUE_SUBTILE,  #
             GROUP_SIZE_M=ctx.GROUP_SIZE_M,  #
+            DQ_SUBTILE=DQ_SUBTILE,
         )
 
         return dq, dk, dv, None, None, None, None, None
