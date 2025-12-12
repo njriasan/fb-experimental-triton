@@ -1121,7 +1121,7 @@ configs_bwd_tlx = [
             "NUM_BUFFERS_DO": 1,
             "NUM_BUFFERS_DS": 1,
             "NUM_BUFFERS_TMEM": 1,
-            # Partition DQ since this seems to be the bottleneck
+            # Don't subtile DQ since this seems to be the bottleneck
             "DQ_SUBTILE": 1,
         },
         num_warps=4,
