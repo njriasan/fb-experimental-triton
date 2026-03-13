@@ -458,6 +458,50 @@ void getReuseChannels(ReuseGroup *group, Operation *regionOp,
   assert(false);
 }
 
+// Like getReuseChannels, but outputs Channel* pointers instead of Operation*.
+// For control flow ops (ForOp/IfOp), pushes nullptr since they are not
+// channels.
+void getReuseChannelPtrs(ReuseGroup *group, Operation *regionOp,
+                         SmallVector<Channel *> &chPtrList) {
+  if (!isa<scf::ForOp>(regionOp) && !isa<scf::IfOp>(regionOp))
+    return;
+  if (group->channels.size() <= 1 || group->channels[0]->getNumBuffers() <= 1)
+    return;
+  if (auto ifOp = dyn_cast<scf::IfOp>(regionOp)) {
+    for (Operation &op : ifOp.thenBlock()->getOperations()) {
+      if (isa<scf::ForOp>(&op) || isa<scf::IfOp>(&op)) {
+        if (needAccumCntForReuse(&op, group)) {
+          chPtrList.push_back(nullptr);
+        }
+      } else {
+        for (auto *ch : group->channels) {
+          if (&op == ch->getDstOp()) {
+            chPtrList.push_back(ch);
+          }
+        }
+      }
+    }
+    return;
+  }
+  if (auto forOp = dyn_cast<scf::ForOp>(regionOp)) {
+    for (Operation &op : forOp.getBody()->without_terminator()) {
+      if (isa<scf::ForOp>(&op) || isa<scf::IfOp>(&op)) {
+        if (needAccumCntForReuse(&op, group)) {
+          chPtrList.push_back(nullptr);
+        }
+      } else {
+        for (auto *ch : group->channels) {
+          if (&op == ch->getDstOp()) {
+            chPtrList.push_back(ch);
+          }
+        }
+      }
+    }
+    return;
+  }
+  assert(false);
+}
+
 // regionOp must contains channels in config[idx].
 unsigned getReuseAccumArgIdx(Operation *regionOp,
                              const DenseSet<Operation *> &regionsWithChannels,
@@ -614,20 +658,15 @@ void getBufferIdxAndPhase(OpBuilderWithAsyncTaskIds &builder, Operation *op,
   // parentForOp.
   // Go through chList in the parentForOp, assume ch is directly in parentForOp.
   // FIXME: handle the case where ch is inside in IfOp.
-  SmallVector<Operation *> chList;
+  // Use Channel* list to correctly distinguish channels that share a dstOp.
+  SmallVector<Channel *> chPtrList;
   auto parentForOp = op->getParentOfType<scf::ForOp>();
-  getReuseChannels(config->getGroup(reuseGroupIdx), parentForOp.getOperation(),
-                   chList);
-  assert(chList.size() >= 1);
-  int vecIdx = 0, theIdx = -1;
-  for (auto *tCh : chList) {
-    if (tCh == ch->getDstOp()) {
-      theIdx = vecIdx;
-      break;
-    }
-    ++vecIdx;
-  }
-  assert(theIdx >= 0);
+  getReuseChannelPtrs(config->getGroup(reuseGroupIdx),
+                      parentForOp.getOperation(), chPtrList);
+  assert(chPtrList.size() >= 1);
+  auto it = llvm::find(chPtrList, ch);
+  assert(it != chPtrList.end());
+  int theIdx = std::distance(chPtrList.begin(), it);
   if (theIdx == 0) {
     std::tie(bufferIdx, phase) =
         getBufferIdxAndPhase(builder, op->getLoc(), accumCnt, numBuffers);
@@ -702,6 +741,7 @@ createChannelsForProducers(SmallVector<Operation *> &currentProds,
     channels.push_back(std::make_unique<ttng::TmemDataChannelPost>(
         producerTaskId, consumerIds, allocOp, true /*isOperandD*/, true,
         channelID));
+    channels.back()->srcName = getOutermostNameFromLoc(allocOp->getLoc());
     setTmemChannelAttr(prod, channelID, "tmem.start");
     setTmemChannelAttr(consumerOp, channelID, "tmem.end");
   }
@@ -2075,6 +2115,12 @@ handleOperandD(ttng::TMEMAllocOp tmemAllocOp, ttng::TCGen5MMAOp mmaOp,
   auto ctx = forOp.getContext();
   SmallVector<int> channelsToBeUpdate;
 
+  // Track the first producer and last consumer across the entire TMEM lifecycle
+  // to create a wrap-around channel that closes the cycle.
+  Operation *firstProducer = nullptr;
+  Operation *lastConsumer = nullptr;
+  unsigned numChannelsCreated = 0;
+
   // Check for producers outside the loop body (e.g., tmem_store before the
   // loop that initializes the accumulator). These producers dominate the loop.
   for (auto user : tmemAllocOp.getResult().getUsers()) {
@@ -2148,6 +2194,10 @@ handleOperandD(ttng::TMEMAllocOp tmemAllocOp, ttng::TCGen5MMAOp mmaOp,
         }
         int producerTaskId = producerTaskIds.front();
         if (needsChannel(producerTaskId, consumerIds)) {
+          if (!firstProducer)
+            firstProducer = currentProds.front();
+          lastConsumer = &op;
+          numChannelsCreated++;
           createChannelsForProducers(currentProds, producerTaskId, consumerIds,
                                      tmemAllocOp.getOperation(), &op, channels);
           currentProds.clear();
@@ -2179,6 +2229,10 @@ handleOperandD(ttng::TMEMAllocOp tmemAllocOp, ttng::TCGen5MMAOp mmaOp,
         auto producerTaskId = producerTaskIds.front();
         auto consumerIds = getAsyncTaskIds(&op);
         if (needsChannel(producerTaskId, consumerIds)) {
+          if (!firstProducer)
+            firstProducer = currentProds.front();
+          lastConsumer = &op;
+          numChannelsCreated++;
           createChannelsForProducers(currentProds, producerTaskId, consumerIds,
                                      tmemAllocOp.getOperation(), &op, channels);
         } else {
@@ -2202,6 +2256,10 @@ handleOperandD(ttng::TMEMAllocOp tmemAllocOp, ttng::TCGen5MMAOp mmaOp,
         auto producerTaskId = producerTaskIds.front();
         auto consumerIds = getAsyncTaskIds(&op);
         if (needsChannel(producerTaskId, consumerIds)) {
+          if (!firstProducer)
+            firstProducer = currentProds.front();
+          lastConsumer = &op;
+          numChannelsCreated++;
           createChannelsForProducers(currentProds, producerTaskId, consumerIds,
                                      tmemAllocOp.getOperation(), &op, channels);
         } else {
@@ -2215,6 +2273,8 @@ handleOperandD(ttng::TMEMAllocOp tmemAllocOp, ttng::TCGen5MMAOp mmaOp,
         channels.push_back(std::make_unique<ttng::TmemDataChannelPost>(
             -1, consumerIds, tmemAllocOp.getOperation(), true /*isOperandD*/,
             true, channels.size()));
+        channels.back()->srcName =
+            getOutermostNameFromLoc(tmemAllocOp->getLoc());
         // Mark producer and consumer.
         setTmemChannelAttr(&op, channelID, "tmem.end");
       }
@@ -2257,10 +2317,41 @@ handleOperandD(ttng::TMEMAllocOp tmemAllocOp, ttng::TCGen5MMAOp mmaOp,
       auto producerTaskId = producerTaskIds.front();
       auto consumerIds = getAsyncTaskIds(user);
       if (needsChannel(producerTaskId, consumerIds)) {
+        if (!firstProducer)
+          firstProducer = currentProds.front();
+        lastConsumer = user;
+        numChannelsCreated++;
         createChannelsForProducers(currentProds, producerTaskId, consumerIds,
                                    tmemAllocOp.getOperation(), user, channels);
       } else {
         assert(false && "Unexpected Producer Found");
+      }
+    }
+  }
+  // Create a wrap-around channel between the first producer and last consumer
+  // to close the TMEM lifecycle. This ensures the last consumer (e.g.,
+  // tmem_load) signals the first producer (e.g., tmem_store) via the Empty
+  // barrier before the next iteration overwrites the buffer.
+  // Only needed when the chain is linear (>= 2 consecutive channels), since
+  // with only 1 channel the first-last pair is already directly connected.
+  // Also require first producer and last consumer to be in the same block
+  // (same nesting level). In FA, the acc lifecycle has tmem_store inside the
+  // inner loop and tmem_load outside it; creating a wrap-around channel across
+  // nesting levels would trigger unsupported paths in insertAsyncComm.
+  // TODO: Investigate whether we need to generalize this to handle
+  // cross-nesting-level wrap-around channels (e.g., for FA's accumulator
+  // correction pattern).
+  if (numChannelsCreated >= 2 && firstProducer && lastConsumer &&
+      firstProducer->getBlock() == lastConsumer->getBlock()) {
+    auto firstProdTaskIds = getAsyncTaskIds(firstProducer);
+    auto lastConsumerIds = getAsyncTaskIds(lastConsumer);
+    if (firstProdTaskIds.size() == 1) {
+      int firstProdTaskId = firstProdTaskIds.front();
+      if (needsChannel(firstProdTaskId, lastConsumerIds)) {
+        SmallVector<Operation *> prods = {firstProducer};
+        createChannelsForProducers(prods, firstProdTaskId, lastConsumerIds,
+                                   tmemAllocOp.getOperation(), lastConsumer,
+                                   channels);
       }
     }
   }
@@ -2321,7 +2412,13 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
       return;
     }
 
-    producerOp = producers[0];
+    producerOp = producers.empty() ? nullptr : producers[0];
+    if (producers.empty()) {
+      // TMEM alloc with a source tensor (e.g., ttng.tmem_alloc %tensor) is
+      // self-contained — the data is embedded at allocation time. No
+      // separate producer channel is needed; skip channel creation.
+      return;
+    }
     if (producers.size() > 1) {
       assert(consumers.size() == 1);
       producerOp = nullptr;
@@ -2335,6 +2432,7 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
     }
   } else {
     assert(isa<ttg::LocalAllocOp>(allocOp));
+    auto localAlloc = cast<ttg::LocalAllocOp>(allocOp);
     for (auto user : allocOp->getUsers()) {
       if (auto mmaOp = dyn_cast<ttng::TCGen5MMAOp>(user)) {
         // Alloc associated with operand D can have multiple producers.
@@ -2346,6 +2444,10 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
       } else
         consumers.push_back(user);
     }
+    // If no LocalStoreOp user but the alloc has a tensor source,
+    // the local_alloc itself is the producer (direct alloc+store).
+    if (!producerOp && localAlloc.getSrc())
+      producerOp = allocOp;
   }
   // FIXME: If we couldn't find a valid producer (e.g., for allocs outside the
   // loop), skip creating a channel for this allocation.
@@ -2369,10 +2471,13 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
       channels.push_back(std::make_unique<ttng::TmemDataChannelPost>(
           producerTaskId, consumerTaskIds, allocOp, false, isOperandDNoAcc,
           channels.size()));
+      channels.back()->srcName = getOutermostNameFromLoc(allocOp->getLoc());
     }
-  } else
+  } else {
     channels.push_back(std::make_unique<ChannelPost>(
         producerTaskIds.front(), consumerTaskIds, allocOp, channels.size()));
+    channels.back()->srcName = getOutermostNameFromLoc(allocOp->getLoc());
+  }
 }
 
 void collectPostChannels(SmallVector<std::unique_ptr<Channel>> &channels,

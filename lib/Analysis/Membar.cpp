@@ -4,10 +4,47 @@
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include <deque>
 
 namespace mlir {
+
+/// Given a value that may be produced by a chain of memdesc_index operations,
+/// narrow the parent buffer's interval to the sub-range actually accessed.
+/// memdesc_index selects a contiguous slice along the leading dimension, so if
+/// the index is a compile-time constant we can compute the exact byte range.
+/// This avoids false hazards when different indices of the same buffer are
+/// accessed (e.g. initializing elements of a barrier array).
+static Interval<size_t> narrowIntervalForSubview(Value value,
+                                                 Interval<size_t> interval) {
+  while (auto indexOp = value.getDefiningOp<triton::gpu::MemDescIndexOp>()) {
+    auto parentType =
+        cast<triton::gpu::MemDescType>(indexOp.getSrc().getType());
+
+    // Only narrow when the index is a compile-time constant.
+    APInt indexVal;
+    if (!matchPattern(indexOp.getIndex(), m_ConstantInt(&indexVal)))
+      break;
+
+    int64_t idx = indexVal.getSExtValue();
+    int64_t dim0 = parentType.getShape()[0];
+    size_t totalSize = interval.end() - interval.start();
+
+    // Ensure the stride divides evenly (should always hold for well-formed IR).
+    if (dim0 <= 0 || totalSize % dim0 != 0)
+      break;
+
+    size_t stride = totalSize / dim0;
+    size_t newStart = interval.start() + idx * stride;
+    size_t newEnd = newStart + stride;
+    interval = Interval<size_t>(newStart, newEnd);
+
+    // Continue tracing through the parent in case of nested indexing.
+    value = indexOp.getSrc();
+  }
+  return interval;
+}
 
 void MembarOrFenceAnalysis::run(FuncBlockInfoMapT &funcBlockInfoMap) {
   FunctionOpInterface funcOp =
@@ -191,36 +228,46 @@ void MembarAnalysis::update(Operation *op, BlockInfo *blockInfo,
       curBlockInfo = funcBlockInfoMap->lookup(callee);
   } else {
     // Intra-function dependencies
-    if (auto memoryEffectOpInterface = dyn_cast<MemoryEffectOpInterface>(op)) {
-      // Explicit buffer
-      SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>>
-          effectInstances;
-      memoryEffectOpInterface.getEffects(effectInstances);
-      for (auto effectInstance : effectInstances) {
-        if (auto value = effectInstance.getValue()) {
-          for (auto bufferId : allocation->getBufferIds(value)) {
-            if (bufferId != Allocation::InvalidBufferId) {
-              if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
-                curBlockInfo
-                    .syncWriteIntervals[allocation->getAllocatedInterval(
-                        bufferId)]
-                    .insert(op);
-              else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
-                curBlockInfo
-                    .syncReadIntervals[allocation->getAllocatedInterval(
-                        bufferId)]
-                    .insert(op);
+    //
+    // For perThread ArriveBarrierOp, skip all SMEM hazard tracking.
+    // mbarrier.arrive has release semantics and mbarrier.wait has acquire
+    // semantics, so no CTA-wide bar.sync is needed before a perThread arrive.
+    // Each thread's program order guarantees its own SMEM ops are visible
+    // before its arrive, and the mbarrier accumulates all arrivals before
+    // releasing the waiter.
+    bool isPerThreadArrive = false;
+    if (auto arriveOp = dyn_cast<triton::nvidia_gpu::ArriveBarrierOp>(op))
+      isPerThreadArrive = arriveOp.getPerThread();
+
+    if (!isPerThreadArrive) {
+      if (auto memoryEffectOpInterface =
+              dyn_cast<MemoryEffectOpInterface>(op)) {
+        // Explicit buffer
+        SmallVector<SideEffects::EffectInstance<MemoryEffects::Effect>>
+            effectInstances;
+        memoryEffectOpInterface.getEffects(effectInstances);
+        for (auto effectInstance : effectInstances) {
+          if (auto value = effectInstance.getValue()) {
+            for (auto bufferId : allocation->getBufferIds(value)) {
+              if (bufferId != Allocation::InvalidBufferId) {
+                auto interval = allocation->getAllocatedInterval(bufferId);
+                interval = narrowIntervalForSubview(value, interval);
+                if (isa<MemoryEffects::Write>(effectInstance.getEffect()))
+                  curBlockInfo.syncWriteIntervals[interval].insert(op);
+                else if (isa<MemoryEffects::Read>(effectInstance.getEffect()))
+                  curBlockInfo.syncReadIntervals[interval].insert(op);
+              }
             }
           }
         }
       }
-    }
-    // If this op is may be signalling other threads asynchronously, make sure
-    // all shared memory transactions are complete beforehand.
-    if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
-      Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
-      curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
-      curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+      // If this op may be signalling other threads asynchronously, make sure
+      // all shared memory transactions are complete beforehand.
+      if (isa<triton::nvidia_gpu::ArriveBarrierOp>(op)) {
+        Interval<size_t> allIntervals(0, std::numeric_limits<size_t>::max());
+        curBlockInfo.syncWriteIntervals[allIntervals].insert(op);
+        curBlockInfo.syncReadIntervals[allIntervals].insert(op);
+      }
     }
     scratchBufferId = allocation->getBufferId(op);
   }

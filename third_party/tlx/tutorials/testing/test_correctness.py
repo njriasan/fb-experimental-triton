@@ -5,9 +5,13 @@ import torch
 import triton
 
 from triton.language.extra.tlx.tutorials.blackwell_gemm_ws import (
-    matmul as _blackwell_gemm_ws, )
+    matmul as _blackwell_gemm_ws,
+    matmul_warp_barrier as _blackwell_gemm_ws_warp_barrier,
+)
 from triton.language.extra.tlx.tutorials.blackwell_gemm_clc import (
-    matmul as _blackwell_gemm_clc, )
+    matmul as _blackwell_gemm_clc,
+    matmul_warp_barrier as _blackwell_gemm_clc_warp_barrier,
+)
 from triton.language.extra.tlx.tutorials.blackwell_gemm_pipelined import (
     matmul as _blackwell_gemm_pipelined, )
 from triton.language.extra.tlx.tutorials.blackwell_gemm_2cta import (
@@ -27,7 +31,9 @@ from triton.language.extra.tlx.tutorials.blackwell_fa_ws import (
 from triton.language.extra.tlx.tutorials.hopper_gemm_pipelined import (
     matmul as _hopper_gemm_pipelined, )
 from triton.language.extra.tlx.tutorials.hopper_gemm_ws import (
-    matmul as _hopper_gemm_ws, )
+    matmul as _hopper_gemm_ws,
+    matmul_warp_barrier as _hopper_gemm_ws_warp_barrier,
+)
 from triton.language.extra.tlx.tutorials.hopper_fa_ws_pipelined_pingpong_persistent import (
     attention as _hopper_fa_ws_pipelined_pingpong_persistent, )
 from triton.language.extra.tlx.tutorials.hopper_fa_ws_pipelined_pingpong import (
@@ -63,6 +69,7 @@ class Gemm:
             "EPILOGUE_SUBTILE": 1,
             "NUM_CTAS": 1,
             "SPLIT_K": 1,
+            "INTERLEAVE_EPILOGUE": 0,
         },
         "blackwell_gemm_clc": {
             "BLOCK_SIZE_M": 128,
@@ -232,6 +239,18 @@ def test_blackwell_gemm_clc(dtype):
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell GPU")
+def test_blackwell_gemm_ws_warp_barrier(dtype):
+    Gemm.run_test(_blackwell_gemm_ws_warp_barrier, Gemm.CONFIGS["blackwell_gemm_ws"], dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell GPU")
+def test_blackwell_gemm_clc_warp_barrier(dtype):
+    Gemm.run_test(_blackwell_gemm_clc_warp_barrier, Gemm.CONFIGS["blackwell_gemm_clc"], dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell GPU")
 def test_blackwell_gemm_pipelined(dtype):
     Gemm.run_test(_blackwell_gemm_pipelined, Gemm.CONFIGS["blackwell_gemm_pipelined"], dtype=dtype)
 
@@ -283,11 +302,14 @@ def test_blackwell_fa_ws_pipelined():
         torch.testing.assert_close(tri_out, ref_out, atol=1e-2, rtol=0)
 
 
+@pytest.mark.parametrize("RESCALE_OPT,USE_WHERE", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("causal", [True, False])
 @pytest.mark.skipif(not is_blackwell(), reason="Requires Blackwell GPU")
-def test_blackwell_fa_ws_pipelined_persistent():
-    config = FlashAttention.CONFIGS["blackwell_fa_ws_pipelined_persistent"]
+def test_blackwell_fa_ws_pipelined_persistent(causal, RESCALE_OPT, USE_WHERE):
+    config = FlashAttention.CONFIGS["blackwell_fa_ws_pipelined_persistent"].copy()
+    config["RESCALE_OPT"] = RESCALE_OPT
+    config["USE_WHERE"] = USE_WHERE
     sm_scale = 0.5
-    causal = True
     for Z, H, N_CTX, HEAD_DIM in FlashAttention.SHAPES:
         q, k, v = FlashAttention.create_inputs(Z, H, N_CTX, HEAD_DIM)
         ref_out = FlashAttention.get_reference(q, k, v, sm_scale, causal)
@@ -335,6 +357,11 @@ def test_hopper_gemm_pipelined():
 @pytest.mark.skipif(not is_hopper(), reason="Requires Hopper GPU")
 def test_hopper_gemm_ws():
     Gemm.run_test(_hopper_gemm_ws, Gemm.CONFIGS["hopper_gemm_ws"])
+
+
+@pytest.mark.skipif(not is_hopper(), reason="Requires Hopper GPU")
+def test_hopper_gemm_ws_warp_barrier():
+    Gemm.run_test(_hopper_gemm_ws_warp_barrier, Gemm.CONFIGS["hopper_gemm_ws"])
 
 
 # =============================================================================
