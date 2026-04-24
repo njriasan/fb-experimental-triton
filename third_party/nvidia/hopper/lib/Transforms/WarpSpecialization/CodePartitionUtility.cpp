@@ -99,10 +99,23 @@ Operation *ChannelPost::getSrcOp() {
     Operation *user = skipIdxOp(usr);
     if (!user)
       continue;
-    if (auto storeOp = dyn_cast<ttg::LocalStoreOp>(user))
+    if (isa<ttg::LocalStoreOp>(user))
       return user;
     if (isa<ttng::AsyncTMACopyGlobalToLocalOp>(user))
       return user;
+    // Look through SubtiledRegionOp: if the alloc is yielded into the
+    // setup region, find the local_store in the tile region.
+    if (auto yieldOp = dyn_cast<ttng::SubtiledRegionYieldOp>(user)) {
+      auto subtiled = dyn_cast<ttng::SubtiledRegionOp>(yieldOp->getParentOp());
+      if (subtiled &&
+          yieldOp->getParentRegion() == &subtiled.getSetupRegion()) {
+        Block &tileBlock = subtiled.getTileRegion().front();
+        for (auto &tileOp : tileBlock.without_terminator()) {
+          if (isa<ttg::LocalStoreOp>(&tileOp))
+            return &tileOp;
+        }
+      }
+    }
   }
   return nullptr;
 }

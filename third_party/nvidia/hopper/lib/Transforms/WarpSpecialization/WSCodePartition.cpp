@@ -2641,7 +2641,15 @@ void insertAsyncComm(
     // producer, return the current scope of consumer.
     while (!isa<triton::FuncOp>(op)) {
       if (getEffectiveParentOp(op) == getEffectiveParentOp(p)) {
-        // consumer is in the nested region.
+        // When the match is due to SubtiledRegionOp transparency,
+        // return the SubtiledRegionOp itself (the structural ancestor
+        // in the shared parent block), not the op inside it.
+        while (auto subtiled = op->getParentOfType<ttng::SubtiledRegionOp>()) {
+          if (subtiled->getParentOp() == getEffectiveParentOp(p))
+            op = subtiled;
+          else
+            break;
+        }
         return op;
       }
       op = op->getParentOp();
@@ -2651,6 +2659,12 @@ void insertAsyncComm(
     // consumer, return the current scope of producer.
     while (!isa<triton::FuncOp>(op)) {
       if (getEffectiveParentOp(c) == getEffectiveParentOp(op)) {
+        while (auto subtiled = c->getParentOfType<ttng::SubtiledRegionOp>()) {
+          if (subtiled->getParentOp() == getEffectiveParentOp(op))
+            c = subtiled.getOperation();
+          else
+            break;
+        }
         return c;
       }
       op = op->getParentOp();
@@ -2665,7 +2679,6 @@ void insertAsyncComm(
     Operation *op = A;
     while (!isa<triton::FuncOp>(op)) {
       if (getEffectiveParentOp(op) == getEffectiveParentOp(B)) {
-        // A is in the nested region.
         return -1;
       }
       op = op->getParentOp();
@@ -2673,7 +2686,6 @@ void insertAsyncComm(
     op = B;
     while (!isa<triton::FuncOp>(op)) {
       if (getEffectiveParentOp(op) == getEffectiveParentOp(A)) {
-        // B is in the nested region.
         return 1;
       }
       op = op->getParentOp();
@@ -3008,8 +3020,9 @@ void insertAsyncComm(
       if (regionCmp < 0) {
         // A/producer in nested region. Lift up headProducer till it is
         // in the same scope as headConsumer.
-        assert(isa<ttng::TCGen5MMAOp>(headProducer) &&
-               "Only TCGen5MMAOp supported");
+        assert((isa<ttng::TCGen5MMAOp>(headProducer) ||
+                headProducer->getParentOfType<ttng::SubtiledRegionOp>()) &&
+               "Only TCGen5MMAOp or SubtiledRegionOp-nested ops supported");
         nestedInsertionTarget = getSameLevelOp(headConsumer, headProducer);
         producerInNestedRegion = true;
       } else if (regionCmp > 0) {
