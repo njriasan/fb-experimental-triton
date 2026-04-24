@@ -2704,6 +2704,46 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
       } else if (isa<ttg::LocalStoreOp>(user)) {
         assert(producerOp == nullptr);
         producerOp = user;
+      } else if (auto yieldOp = dyn_cast<ttng::SubtiledRegionYieldOp>(user)) {
+        // The SMEM buffer is yielded into a SubtiledRegionOp's setup
+        // region. Find the local_store inside the tile region that
+        // writes to the corresponding block argument.
+        auto subtiled =
+            dyn_cast<ttng::SubtiledRegionOp>(yieldOp->getParentOp());
+        if (subtiled &&
+            yieldOp->getParentRegion() == &subtiled.getSetupRegion()) {
+          for (OpOperand &operand : yieldOp->getOpOperands()) {
+            if (operand.get() != allocOp->getResult(0))
+              continue;
+            unsigned yieldIdx = operand.getOperandNumber();
+            // Find which tile arg(s) map to this yield slot.
+            Block &tileBlock = subtiled.getTileRegion().front();
+            for (auto &tileOp : tileBlock.without_terminator()) {
+              auto store = dyn_cast<ttg::LocalStoreOp>(&tileOp);
+              if (!store)
+                continue;
+              Value dst = store.getDst();
+              if (dst) {
+                if (auto blockArg = dyn_cast<BlockArgument>(dst)) {
+                  // Tile args map to yield slots via tileMappings.
+                  // Check all tile mappings for any that reference
+                  // this yield index.
+                  auto tileMappings = subtiled.getTileMappings();
+                  for (auto mappingAttr : tileMappings) {
+                    auto mapping =
+                        cast<DenseI32ArrayAttr>(mappingAttr).asArrayRef();
+                    if (blockArg.getArgNumber() < mapping.size() &&
+                        static_cast<unsigned>(
+                            mapping[blockArg.getArgNumber()]) == yieldIdx) {
+                      if (!producerOp)
+                        producerOp = &tileOp;
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       } else
         consumers.push_back(user);
     }
