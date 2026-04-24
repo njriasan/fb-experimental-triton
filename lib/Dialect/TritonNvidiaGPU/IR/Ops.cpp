@@ -1125,8 +1125,22 @@ void TMEMSubSliceOp::build(OpBuilder &builder, OperationState &state,
 
 // -- SubtiledRegionOp --
 LogicalResult SubtiledRegionOp::verify() {
-  // 1. Setup region terminates with SubtiledRegionYieldOp
+  // 0. Setup block arguments must match inputs (IsolatedFromAbove).
   auto &setupBlock = getSetupRegion().front();
+  if (setupBlock.getNumArguments() != getInputs().size())
+    return emitOpError("setup region has ")
+           << setupBlock.getNumArguments() << " block arguments but op has "
+           << getInputs().size() << " inputs";
+  for (auto [i, pair] :
+       llvm::enumerate(llvm::zip(setupBlock.getArguments(), getInputs()))) {
+    auto [blockArg, input] = pair;
+    if (blockArg.getType() != input.getType())
+      return emitOpError("setup block arg ")
+             << i << " has type " << blockArg.getType()
+             << " but input has type " << input.getType();
+  }
+
+  // 1. Setup region terminates with SubtiledRegionYieldOp
   if (!isa<SubtiledRegionYieldOp>(setupBlock.getTerminator()))
     return emitOpError("setup region must terminate with "
                        "'ttng.subtiled_region_yield'");
@@ -1297,6 +1311,16 @@ LogicalResult SubtiledRegionOp::verify() {
 }
 
 void SubtiledRegionOp::print(OpAsmPrinter &p) {
+  // Print inputs
+  if (!getInputs().empty()) {
+    p << " inputs(";
+    llvm::interleaveComma(getInputs(), p, [&](Value v) { p.printOperand(v); });
+    p << " : ";
+    llvm::interleaveComma(getInputs().getTypes(), p,
+                          [&](Type t) { p.printType(t); });
+    p << ")";
+  }
+
   // Print barriers
   if (!getBarriers().empty()) {
     p << " barriers(";
@@ -1349,9 +1373,9 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
                           {"tileMappings", "barrierAnnotations",
                            "tokenAnnotations", getOperandSegmentSizeAttr()});
 
-  // Print setup region
-  p << " setup ";
-  p.printRegion(getSetupRegion(), /*printEntryBlockArgs=*/false);
+  // Print setup region (with block args from inputs)
+  p << " setup";
+  p.printRegion(getSetupRegion(), /*printEntryBlockArgs=*/true);
 
   // Print tile region with block args
   p << " tile";
@@ -1371,12 +1395,21 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
 
 ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
                                     OperationState &result) {
+  SmallVector<OpAsmParser::UnresolvedOperand> inputOperands;
+  SmallVector<Type> inputTypes;
   SmallVector<OpAsmParser::UnresolvedOperand> barrierOperands;
   SmallVector<Type> barrierTypes;
   SmallVector<OpAsmParser::UnresolvedOperand> phaseOperands;
   SmallVector<Type> phaseTypes;
   SmallVector<OpAsmParser::UnresolvedOperand> tokenOperands;
   SmallVector<Type> tokenTypes;
+
+  // Parse optional inputs(...)
+  if (succeeded(parser.parseOptionalKeyword("inputs"))) {
+    if (parser.parseLParen() || parser.parseOperandList(inputOperands) ||
+        parser.parseColonTypeList(inputTypes) || parser.parseRParen())
+      return failure();
+  }
 
   // Parse optional barriers(...)
   if (succeeded(parser.parseOptionalKeyword("barriers"))) {
@@ -1428,8 +1461,10 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Resolve operands
-  if (parser.resolveOperands(barrierOperands, barrierTypes,
+  // Resolve operands (inputs first, then barriers, accumCnts, tokenValues)
+  if (parser.resolveOperands(inputOperands, inputTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(barrierOperands, barrierTypes,
                              parser.getCurrentLocation(), result.operands) ||
       parser.resolveOperands(phaseOperands, phaseTypes,
                              parser.getCurrentLocation(), result.operands) ||
@@ -1437,14 +1472,15 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
                              parser.getCurrentLocation(), result.operands))
     return failure();
 
-  // Set operand segment sizes
+  // Set operand segment sizes (inputs, barriers, accumCnts, tokenValues)
   result.addAttribute(SubtiledRegionOp::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getDenseI32ArrayAttr(
-                          {static_cast<int32_t>(barrierOperands.size()),
+                          {static_cast<int32_t>(inputOperands.size()),
+                           static_cast<int32_t>(barrierOperands.size()),
                            static_cast<int32_t>(phaseOperands.size()),
                            static_cast<int32_t>(tokenOperands.size())}));
 
-  // Parse setup region
+  // Parse setup region (with block args from inputs)
   if (parser.parseKeyword("setup"))
     return failure();
   Region *setupRegion = result.addRegion();

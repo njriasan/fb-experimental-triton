@@ -138,8 +138,12 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   }
 
   // 1. Clone setup region ops (except yield), emitting setup barriers.
+  // Map setup block args to the corresponding inputs (IsolatedFromAbove).
   Block &setupBlock = op.getSetupRegion().front();
   IRMapping setupMapping;
+  for (auto [blockArg, input] :
+       llvm::zip(setupBlock.getArguments(), op.getInputs()))
+    setupMapping.map(blockArg, input);
   if (setupBefore.empty() && setupAfter.empty()) {
     for (Operation &setupOp : setupBlock.without_terminator())
       builder.clone(setupOp, setupMapping);
