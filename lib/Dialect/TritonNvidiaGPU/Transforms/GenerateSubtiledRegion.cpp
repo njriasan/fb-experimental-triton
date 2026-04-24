@@ -1319,6 +1319,8 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
           continue;
         if (user->isBeforeInBlock(splitOp) || user == splitOp)
           continue;
+        if (isa<SubtiledRegionOp>(user))
+          continue;
         tmaChains[t].push_back(user);
         // Also capture token users (e.g., async_tma_store_token_wait).
         for (Value result : user->getResults())
@@ -1333,9 +1335,6 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
   }
 
   // Check if TMA chains are non-empty and structurally equivalent.
-  for (unsigned t = 0; t < numTiles; ++t)
-    llvm::errs() << "tmaChains[" << t << "].size() = " << tmaChains[t].size()
-                 << "\n";
   bool hasTmaChains = !tmaChains[0].empty();
   for (unsigned t = 1; t < numTiles && hasTmaChains; ++t)
     hasTmaChains = !tmaChains[t].empty();
