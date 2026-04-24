@@ -1215,6 +1215,76 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
   if (!built)
     return;
 
+  // Build a second SubtiledRegionOp for TMA store ops that consume
+  // the same SMEM buffers the per-tile local_store wrote to.
+  // Collect per-tile TMA store chains by following SMEM buffer users.
+  SmallVector<SmallVector<Operation *>> tmaChains(numTiles);
+  for (unsigned t = 0; t < numTiles; ++t) {
+    for (Operation *op : chains[t]) {
+      auto storeOp = dyn_cast<gpu::LocalStoreOp>(op);
+      if (!storeOp)
+        continue;
+      Value smemBuf = storeOp.getDst();
+      for (Operation *user : smemBuf.getUsers()) {
+        if (user == storeOp || user->getBlock() != block)
+          continue;
+        if (user->isBeforeInBlock(splitOp) || user == splitOp)
+          continue;
+        tmaChains[t].push_back(user);
+        // Also capture token users (e.g., async_tma_store_token_wait).
+        for (Value result : user->getResults())
+          for (Operation *tokenUser : result.getUsers())
+            if (tokenUser->getBlock() == block)
+              tmaChains[t].push_back(tokenUser);
+      }
+    }
+    llvm::sort(tmaChains[t], [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+  }
+
+  // Check if TMA chains are non-empty and structurally equivalent.
+  bool hasTmaChains = !tmaChains[0].empty();
+  for (unsigned t = 1; t < numTiles && hasTmaChains; ++t)
+    hasTmaChains = !tmaChains[t].empty();
+
+  if (hasTmaChains) {
+    auto tmaEquiv = checkStructuralEquivalenceN(tmaChains);
+    if (tmaEquiv) {
+      Operation *tmaInsertBefore = findInsertionPoint(
+          block, lastSetupOp, tmaChains, tmaEquiv->differingOperands,
+          tmaEquiv->identityOps);
+      OpBuilder tmaBuilder(tmaInsertBefore);
+
+      // The TMA chains don't come from a split — the "leaf values" are
+      // the SMEM buffers (differing operands from the epilogue chain).
+      // Use the SMEM buffers as the per-tile leaf values. The setup
+      // region just yields them and any other differing operands.
+      SmallVector<Value> smemLeaves(numTiles);
+      for (unsigned t = 0; t < numTiles; ++t) {
+        // Find the SMEM buffer from the first op in the TMA chain
+        // (async_tma_copy_local_to_global's last operand is the SMEM src).
+        auto tmaCopy =
+            dyn_cast<AsyncTMACopyLocalToGlobalOp>(tmaChains[t].front());
+        if (tmaCopy)
+          smemLeaves[t] = tmaCopy.getSrc();
+      }
+
+      if (smemLeaves[0]) {
+        buildSingleSubtiledRegionN(tmaBuilder, loc, /*setupOps=*/{}, smemLeaves,
+                                   tmaChains, *tmaEquiv);
+
+        // Erase original TMA ops.
+        for (auto &tmaChain : llvm::reverse(tmaChains)) {
+          for (Operation *op : llvm::reverse(tmaChain)) {
+            if (op->use_empty())
+              op->erase();
+          }
+        }
+      }
+    }
+  }
+
   // Erase original ops (reverse program order).
   for (auto &chain : llvm::reverse(chains)) {
     for (Operation *op : llvm::reverse(chain)) {
