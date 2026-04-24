@@ -1126,6 +1126,7 @@ def TTNG_PrefetchTensormapOp: TTNG_Op<
 
 def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     RecursiveMemoryEffects,
+    IsolatedFromAbove,
     AttrSizedOperandSegments
 ]> {
   let summary = "Encapsulates a subtiling pattern for epilogue operations";
@@ -1136,9 +1137,14 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     This gives the compiler a structured way to reason about per-tile operations
     and barrier placement.
 
+    The op is `IsolatedFromAbove`: all values from the enclosing scope that are
+    needed inside any region must be passed explicitly via `inputs`. The setup
+    region receives these as block arguments, in the same order as `inputs`.
+
     The op has three regions:
-    - `setupRegion`: computes subtile values (e.g. tmem_subslice + tmem_load,
-      constants). Terminated by `subtiled_region_yield`.
+    - `setupRegion`: receives `inputs` as block arguments. Computes subtile
+      values (e.g. tmem_subslice + tmem_load, constants). Terminated by
+      `subtiled_region_yield`.
     - `tileRegion`: per-tile body that is replicated during lowering. Block
       arguments are substituted from setup outputs via `tileMappings`.
       Terminated by `subtiled_region_yield`.
@@ -1159,6 +1165,7 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
   }];
 
   let arguments = (ins
+    Variadic<AnyType>:$inputs,
     Variadic<TTG_MemDescType>:$barriers,
     Variadic<I64>:$accumCnts,
     Variadic<AnyType>:$tokenValues,

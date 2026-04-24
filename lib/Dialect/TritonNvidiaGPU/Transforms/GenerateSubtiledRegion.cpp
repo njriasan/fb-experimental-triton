@@ -619,9 +619,37 @@ static void buildSingleSubtiledRegionN(
   auto barrierAnnotationsAttr = builder.getArrayAttr({});
   auto tokenAnnotationsAttr = builder.getArrayAttr({});
 
+  // Collect all outer values that the setup yield needs. These become
+  // explicit inputs to the SubtiledRegionOp (IsolatedFromAbove).
+  SmallVector<Value> outerValues;
+  DenseMap<Value, unsigned> outerValueIdx;
+  auto getOrAddInput = [&](Value v) -> unsigned {
+    auto [it, inserted] = outerValueIdx.try_emplace(v, outerValues.size());
+    if (inserted)
+      outerValues.push_back(v);
+    return it->second;
+  };
+
+  // Pre-register all values that will be yielded from setup.
+  for (Value leaf : leafValues)
+    getOrAddInput(leaf);
+  for (auto &perTile : differing)
+    for (Value v : perTile)
+      getOrAddInput(v);
+  if (!equiv.identityPerTile.empty()) {
+    for (auto [i, id] : llvm::enumerate(equiv.identityOps))
+      for (unsigned t = 0; t < numTiles; ++t)
+        if (equiv.identityPerTile[i][t])
+          getOrAddInput(equiv.identityPerTile[i][t]);
+  } else {
+    for (auto &id : equiv.identityOps)
+      getOrAddInput(id.varyingOperand);
+  }
+
   auto regionOp = SubtiledRegionOp::create(
-      builder, loc, TypeRange{}, ValueRange{}, ValueRange{}, ValueRange{},
-      tileMappingsAttr, barrierAnnotationsAttr, tokenAnnotationsAttr);
+      builder, loc, TypeRange{}, outerValues, ValueRange{}, ValueRange{},
+      ValueRange{}, tileMappingsAttr, barrierAnnotationsAttr,
+      tokenAnnotationsAttr);
 
   // Propagate async_task_id from the chain ops so that code partition
   // does not prune the SubtiledRegionOp as untagged.
@@ -634,30 +662,28 @@ static void buildSingleSubtiledRegionN(
   }
 
   // --- Setup Region ---
-  // Don't clone setupOps into the setup region — keep them in the outer
-  // block. This avoids implicit captures of outer-scope values (like
-  // loop iter_args) that would break when specializeRegion clones the
-  // enclosing block with IRMapping. Instead, the setup yield references
-  // the original values directly; MLIR's clone will remap them.
+  // The setup region receives all outer values as block arguments
+  // (IsolatedFromAbove). The yield references these block args.
   Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
+  for (Value v : outerValues)
+    setupBlock->addArgument(v.getType(), loc);
   OpBuilder setupBuilder = OpBuilder::atBlockEnd(setupBlock);
 
   SmallVector<Value> setupYieldValues;
-  // Yield the N leaf values directly from the outer scope.
+  // Yield the N leaf values via block args.
   for (Value leaf : leafValues)
-    setupYieldValues.push_back(leaf);
+    setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[leaf]));
   // Yield N-way differing operands.
-  for (auto &perTile : differing) {
+  for (auto &perTile : differing)
     for (Value v : perTile)
-      setupYieldValues.push_back(v);
-  }
+      setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[v]));
   // Yield identity insertion operands.
   if (!equiv.identityPerTile.empty()) {
     for (auto [i, id] : llvm::enumerate(equiv.identityOps)) {
       for (unsigned t = 0; t < numTiles; ++t) {
         Value v = equiv.identityPerTile[i][t];
         if (v)
-          setupYieldValues.push_back(v);
+          setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[v]));
         else
           setupYieldValues.push_back(arith::ConstantOp::create(
               setupBuilder, loc,
@@ -671,7 +697,8 @@ static void buildSingleSubtiledRegionN(
           setupBuilder, loc,
           setupBuilder.getIntegerAttr(id.varyingOperand.getType(),
                                       id.identityVal));
-      setupYieldValues.push_back(id.varyingOperand);
+      setupYieldValues.push_back(
+          setupBlock->getArgument(outerValueIdx[id.varyingOperand]));
       setupYieldValues.push_back(identityConst);
     }
   }
@@ -908,10 +935,11 @@ static bool buildMultiTaskSubtiledRegionsN(
     auto barrierAnnotationsAttr = outerBuilder.getArrayAttr({});
     auto tokenAnnotationsAttr = outerBuilder.getArrayAttr({});
 
-    auto regionOp =
-        SubtiledRegionOp::create(outerBuilder, loc, TypeRange{}, ValueRange{},
-                                 ValueRange{}, ValueRange{}, tileMappingsAttr,
-                                 barrierAnnotationsAttr, tokenAnnotationsAttr);
+    // TODO: Collect inputs for IsolatedFromAbove in multi-task path.
+    auto regionOp = SubtiledRegionOp::create(
+        outerBuilder, loc, TypeRange{}, /*inputs=*/ValueRange{}, ValueRange{},
+        ValueRange{}, ValueRange{}, tileMappingsAttr, barrierAnnotationsAttr,
+        tokenAnnotationsAttr);
 
     // --- Setup Region ---
     Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
