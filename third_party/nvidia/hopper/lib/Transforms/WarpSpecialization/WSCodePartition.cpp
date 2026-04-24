@@ -2623,14 +2623,24 @@ void insertAsyncComm(
     DenseSet<Operation *> &regionsWithChannels, ReuseConfig *config,
     bool isPost) {
 
+  // SubtiledRegionOp is a sequencing marker, not a control flow boundary.
+  // Skip it when walking parent chains so that ops inside it are treated
+  // as being at the same nesting level as the parent block.
+  auto getEffectiveParentOp = [](Operation *op) -> Operation * {
+    Operation *parent = op->getParentOp();
+    while (parent && isa<ttng::SubtiledRegionOp>(parent))
+      parent = parent->getParentOp();
+    return parent;
+  };
+
   // Find the operation that is along producer's parent chain, and its parent
   // is the same op as producer's parent. Here p is producer, and c is consumer.
-  auto getSameLevelOp = [](Operation *p, Operation *c) -> Operation * {
+  auto getSameLevelOp = [&](Operation *p, Operation *c) -> Operation * {
     Operation *op = c;
     // Go along consumer's parent chain until it is in the same scope as
     // producer, return the current scope of consumer.
     while (!isa<triton::FuncOp>(op)) {
-      if (op->getParentOp() == p->getParentOp()) {
+      if (getEffectiveParentOp(op) == getEffectiveParentOp(p)) {
         // consumer is in the nested region.
         return op;
       }
@@ -2640,7 +2650,7 @@ void insertAsyncComm(
     // Go along producer's parent chain until it is in the same scope as
     // consumer, return the current scope of producer.
     while (!isa<triton::FuncOp>(op)) {
-      if (c->getParentOp() == op->getParentOp()) {
+      if (getEffectiveParentOp(c) == getEffectiveParentOp(op)) {
         return c;
       }
       op = op->getParentOp();
@@ -2649,12 +2659,12 @@ void insertAsyncComm(
   };
 
   // 0: same scope, -1: A in nested scope, 1: B in nested scope
-  auto isAinNestedRegion = [](Operation *A, Operation *B) -> int {
+  auto isAinNestedRegion = [&](Operation *A, Operation *B) -> int {
     if (A->getBlock() == B->getBlock())
       return 0;
     Operation *op = A;
     while (!isa<triton::FuncOp>(op)) {
-      if (op->getParentOp() == B->getParentOp()) {
+      if (getEffectiveParentOp(op) == getEffectiveParentOp(B)) {
         // A is in the nested region.
         return -1;
       }
@@ -2662,7 +2672,7 @@ void insertAsyncComm(
     }
     op = B;
     while (!isa<triton::FuncOp>(op)) {
-      if (op->getParentOp() == A->getParentOp()) {
+      if (getEffectiveParentOp(op) == getEffectiveParentOp(A)) {
         // B is in the nested region.
         return 1;
       }

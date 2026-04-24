@@ -623,6 +623,16 @@ static void buildSingleSubtiledRegionN(
       builder, loc, TypeRange{}, ValueRange{}, ValueRange{}, ValueRange{},
       tileMappingsAttr, barrierAnnotationsAttr, tokenAnnotationsAttr);
 
+  // Propagate async_task_id from the chain ops so that code partition
+  // does not prune the SubtiledRegionOp as untagged.
+  for (Operation *op : tplChain) {
+    auto taskIds = getOpAsyncTaskIds(op);
+    if (!taskIds.empty()) {
+      regionOp->setAttr("async_task_id", DenseI32ArrayAttr::get(ctx, taskIds));
+      break;
+    }
+  }
+
   // --- Setup Region ---
   Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
   OpBuilder setupBuilder = OpBuilder::atBlockEnd(setupBlock);
