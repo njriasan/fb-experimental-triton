@@ -634,30 +634,30 @@ static void buildSingleSubtiledRegionN(
   }
 
   // --- Setup Region ---
+  // Don't clone setupOps into the setup region — keep them in the outer
+  // block. This avoids implicit captures of outer-scope values (like
+  // loop iter_args) that would break when specializeRegion clones the
+  // enclosing block with IRMapping. Instead, the setup yield references
+  // the original values directly; MLIR's clone will remap them.
   Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
   OpBuilder setupBuilder = OpBuilder::atBlockEnd(setupBlock);
-  IRMapping setupMapping;
-  for (Operation *op : setupOps)
-    setupBuilder.clone(*op, setupMapping);
 
   SmallVector<Value> setupYieldValues;
-  // Yield the N leaf values.
+  // Yield the N leaf values directly from the outer scope.
   for (Value leaf : leafValues)
-    setupYieldValues.push_back(setupMapping.lookupOrDefault(leaf));
+    setupYieldValues.push_back(leaf);
   // Yield N-way differing operands.
   for (auto &perTile : differing) {
     for (Value v : perTile)
-      setupYieldValues.push_back(setupMapping.lookupOrDefault(v));
+      setupYieldValues.push_back(v);
   }
   // Yield identity insertion operands.
   if (!equiv.identityPerTile.empty()) {
-    // Mixed identity: yield N values per identity op (per-tile varying
-    // values, with identity constants for tiles missing the op).
     for (auto [i, id] : llvm::enumerate(equiv.identityOps)) {
       for (unsigned t = 0; t < numTiles; ++t) {
         Value v = equiv.identityPerTile[i][t];
         if (v)
-          setupYieldValues.push_back(setupMapping.lookupOrDefault(v));
+          setupYieldValues.push_back(v);
         else
           setupYieldValues.push_back(arith::ConstantOp::create(
               setupBuilder, loc,
@@ -667,12 +667,11 @@ static void buildSingleSubtiledRegionN(
     }
   } else {
     for (auto &id : equiv.identityOps) {
-      Value varying = setupMapping.lookupOrDefault(id.varyingOperand);
       Value identityConst = arith::ConstantOp::create(
           setupBuilder, loc,
           setupBuilder.getIntegerAttr(id.varyingOperand.getType(),
                                       id.identityVal));
-      setupYieldValues.push_back(varying);
+      setupYieldValues.push_back(id.varyingOperand);
       setupYieldValues.push_back(identityConst);
     }
   }
