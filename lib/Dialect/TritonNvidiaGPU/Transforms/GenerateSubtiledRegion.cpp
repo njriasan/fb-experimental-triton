@@ -1239,17 +1239,10 @@ public:
     while (changed) {
       changed = false;
       SmallVector<triton::SplitOp> splitOps;
-      getOperation().walk([&](triton::FuncOp funcOp) {
-        for (auto &block : funcOp.getBody()) {
-          for (auto &op : block) {
-            if (auto splitOp = dyn_cast<triton::SplitOp>(&op))
-              if (!failedSplits.contains(&op))
-                // Skip splits inside SubtiledRegionOp regions (cloned setup
-                // chains) to avoid infinite re-processing.
-                if (!op.getParentOfType<SubtiledRegionOp>())
-                  splitOps.push_back(splitOp);
-          }
-        }
+      getOperation().walk([&](triton::SplitOp splitOp) {
+        if (!failedSplits.contains(splitOp.getOperation()))
+          if (!splitOp->getParentOfType<SubtiledRegionOp>())
+            splitOps.push_back(splitOp);
       });
       for (auto splitOp : splitOps) {
         auto tmemLoad = traceSetupChain(splitOp);
