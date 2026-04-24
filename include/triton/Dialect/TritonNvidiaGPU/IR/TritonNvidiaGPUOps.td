@@ -1126,7 +1126,6 @@ def TTNG_PrefetchTensormapOp: TTNG_Op<
 
 def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     RecursiveMemoryEffects,
-    IsolatedFromAbove,
     AttrSizedOperandSegments
 ]> {
   let summary = "Encapsulates a subtiling pattern for epilogue operations";

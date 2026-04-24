@@ -468,6 +468,8 @@ collectPerTileChain(Value splitResult, Operation *splitOp, Block *block,
         continue;
       if (excludeOps.contains(user))
         continue;
+      if (isa<SubtiledRegionOp>(user))
+        continue;
       if (!visited.insert(user).second)
         continue;
       chain.push_back(user);
@@ -935,37 +937,96 @@ static bool buildMultiTaskSubtiledRegionsN(
     auto barrierAnnotationsAttr = outerBuilder.getArrayAttr({});
     auto tokenAnnotationsAttr = outerBuilder.getArrayAttr({});
 
-    // TODO: Collect inputs for IsolatedFromAbove in multi-task path.
+    // Collect outer values for IsolatedFromAbove.
+    // Only values defined outside setupOps need to be inputs.
+    SmallVector<Value> outerVals;
+    DenseMap<Value, unsigned> outerIdx;
+    DenseSet<Operation *> setupOpSet(setupOps.begin(), setupOps.end());
+    auto isOuter = [&](Value v) -> bool {
+      if (auto def = v.getDefiningOp())
+        return !setupOpSet.contains(def);
+      return true; // block args are outer
+    };
+    auto getOrAdd = [&](Value v) -> unsigned {
+      auto [it, ins] = outerIdx.try_emplace(v, outerVals.size());
+      if (ins)
+        outerVals.push_back(v);
+      return it->second;
+    };
+
+    if (ownsSetup) {
+      for (Operation *op : setupOps)
+        for (Value operand : op->getOperands())
+          if (isOuter(operand))
+            getOrAdd(operand);
+    }
+    // Non-owning setup and differing/buffer vals: only add if outer.
+    if (!ownsSetup) {
+      for (auto &entry : resolvedDiff)
+        for (Value v : entry.setupVals)
+          if (isOuter(v))
+            getOrAdd(v);
+    } else {
+      for (auto &entry : resolvedDiff)
+        for (Value v : entry.setupVals)
+          if (isOuter(v))
+            getOrAdd(v);
+    }
+    for (auto *buf : outBufs)
+      for (unsigned t = 0; t < numTiles; ++t)
+        if (isOuter(buf->smemVals[t]))
+          getOrAdd(buf->smemVals[t]);
+
     auto regionOp = SubtiledRegionOp::create(
-        outerBuilder, loc, TypeRange{}, /*inputs=*/ValueRange{}, ValueRange{},
-        ValueRange{}, ValueRange{}, tileMappingsAttr, barrierAnnotationsAttr,
+        outerBuilder, loc, TypeRange{}, outerVals, ValueRange{}, ValueRange{},
+        ValueRange{}, tileMappingsAttr, barrierAnnotationsAttr,
         tokenAnnotationsAttr);
 
     // --- Setup Region ---
     Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
+    for (Value v : outerVals)
+      setupBlock->addArgument(v.getType(), loc);
     OpBuilder setupBuilder = OpBuilder::atBlockEnd(setupBlock);
+
+    // Build mapping from outer values to setup block args.
+    auto mapToArg = [&](Value v) -> Value {
+      return setupBlock->getArgument(outerIdx[v]);
+    };
+
+    // Helper to resolve a value in the setup region context:
+    // if it's outer, use the block arg; if it's a result of a cloned
+    // setup op, use the cloned result via setupMapping.
+    IRMapping setupMapping;
+    auto resolveVal = [&](Value v) -> Value {
+      if (outerIdx.count(v))
+        return mapToArg(v);
+      return setupMapping.lookupOrDefault(v);
+    };
 
     SmallVector<Value> setupYields;
     if (ownsSetup) {
-      IRMapping setupMapping;
+      // Map outer operands of setupOps to block args.
+      for (Operation *op : setupOps)
+        for (Value operand : op->getOperands())
+          if (isOuter(operand) && !setupMapping.contains(operand))
+            setupMapping.map(operand, mapToArg(operand));
       for (Operation *op : setupOps)
         setupBuilder.clone(*op, setupMapping);
       for (Value leaf : leafValues)
         setupYields.push_back(setupMapping.lookupOrDefault(leaf));
       for (auto &entry : resolvedDiff) {
         for (unsigned t = 0; t < numTiles; ++t)
-          setupYields.push_back(
-              setupMapping.lookupOrDefault(entry.setupVals[t]));
+          setupYields.push_back(resolveVal(entry.setupVals[t]));
       }
     } else {
       for (auto &entry : resolvedDiff) {
         for (unsigned t = 0; t < numTiles; ++t)
-          setupYields.push_back(entry.setupVals[t]);
+          setupYields.push_back(resolveVal(entry.setupVals[t]));
       }
     }
     for (auto *buf : outBufs) {
       for (unsigned t = 0; t < numTiles; ++t)
-        setupYields.push_back(buf->smemVals[t]);
+        setupYields.push_back(resolveVal(buf->smemVals[t]));
     }
     SubtiledRegionYieldOp::create(setupBuilder, loc, setupYields);
 
@@ -1243,8 +1304,10 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
   if (!built)
     return;
 
-  // Build a second SubtiledRegionOp for TMA store ops that consume
-  // the same SMEM buffers the per-tile local_store wrote to.
+  // TODO: Build a second SubtiledRegionOp for TMA store ops.
+  // Disabled for now while debugging the first SubtiledRegionOp.
+#if 0
+  {
   // Collect per-tile TMA store chains by following SMEM buffer users.
   SmallVector<SmallVector<Operation *>> tmaChains(numTiles);
   for (unsigned t = 0; t < numTiles; ++t) {
@@ -1312,12 +1375,14 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
       }
     }
   }
+#endif
 
   // Erase original ops (reverse program order).
   for (auto &chain : llvm::reverse(chains)) {
     for (Operation *op : llvm::reverse(chain)) {
-      if (op->use_empty())
+      if (op->use_empty()) {
         op->erase();
+      }
     }
   }
   for (Operation *op : llvm::reverse(setupOps)) {
