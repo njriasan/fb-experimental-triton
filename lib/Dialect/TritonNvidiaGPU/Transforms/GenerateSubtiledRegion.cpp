@@ -1304,10 +1304,8 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
   if (!built)
     return;
 
-  // TODO: Build a second SubtiledRegionOp for TMA store ops.
-  // Disabled for now while debugging the first SubtiledRegionOp.
-#if 0
-  {
+  // Build a second SubtiledRegionOp for TMA store ops that consume
+  // the same SMEM buffers the per-tile local_store wrote to.
   // Collect per-tile TMA store chains by following SMEM buffer users.
   SmallVector<SmallVector<Operation *>> tmaChains(numTiles);
   for (unsigned t = 0; t < numTiles; ++t) {
@@ -1335,6 +1333,9 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
   }
 
   // Check if TMA chains are non-empty and structurally equivalent.
+  for (unsigned t = 0; t < numTiles; ++t)
+    llvm::errs() << "tmaChains[" << t << "].size() = " << tmaChains[t].size()
+                 << "\n";
   bool hasTmaChains = !tmaChains[0].empty();
   for (unsigned t = 1; t < numTiles && hasTmaChains; ++t)
     hasTmaChains = !tmaChains[t].empty();
@@ -1375,7 +1376,6 @@ void tryGenerateForSplit(triton::SplitOp splitOp) {
       }
     }
   }
-#endif
 
   // Erase original ops (reverse program order).
   for (auto &chain : llvm::reverse(chains)) {
