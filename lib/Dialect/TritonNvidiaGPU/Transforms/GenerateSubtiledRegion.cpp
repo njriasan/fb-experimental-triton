@@ -614,6 +614,46 @@ static void buildSingleSubtiledRegionN(
     }
   }
 
+  // Detect "shared" operands — values used by template chain ops that
+  // are defined outside the chain and are the same across all tiles.
+  // These need tile args too, so the tile body doesn't capture them.
+  DenseSet<Value> chainResults;
+  for (Operation *op : tplChain)
+    for (Value r : op->getResults())
+      chainResults.insert(r);
+  // Also include leaf values and differing operands as "known mapped".
+  DenseSet<Value> alreadyMapped;
+  alreadyMapped.insert(leafValues[equiv.templateChainIdx]);
+  for (auto &perTile : differing)
+    alreadyMapped.insert(perTile[equiv.templateChainIdx]);
+  for (auto &id : equiv.identityOps)
+    alreadyMapped.insert(id.varyingOperand);
+
+  SmallVector<Value> sharedOperands;
+  DenseSet<Value> seenShared;
+  for (Operation *op : tplChain) {
+    for (Value operand : op->getOperands()) {
+      if (chainResults.contains(operand))
+        continue;
+      if (alreadyMapped.contains(operand))
+        continue;
+      if (!operand.getDefiningOp())
+        continue; // func arg — accessible everywhere
+      if (!seenShared.insert(operand).second)
+        continue;
+      sharedOperands.push_back(operand);
+    }
+  }
+
+  // Add shared operands as tile args: each maps to the same yield slot
+  // for all tiles (shared, not per-tile).
+  for (Value v : sharedOperands) {
+    tileArgTypes.push_back(v.getType());
+    for (unsigned t = 0; t < numTiles; ++t)
+      tileMappings[t].push_back(yieldIdx);
+    yieldIdx += 1; // one yield slot, shared across all tiles
+  }
+
   SmallVector<Attribute> mappingAttrs;
   for (auto &mapping : tileMappings)
     mappingAttrs.push_back(DenseI32ArrayAttr::get(ctx, mapping));
@@ -621,8 +661,7 @@ static void buildSingleSubtiledRegionN(
   auto barrierAnnotationsAttr = builder.getArrayAttr({});
   auto tokenAnnotationsAttr = builder.getArrayAttr({});
 
-  // Collect all outer values that the setup yield needs. These become
-  // explicit inputs to the SubtiledRegionOp (IsolatedFromAbove).
+  // Collect all outer values that the setup yield needs as inputs.
   SmallVector<Value> outerValues;
   DenseMap<Value, unsigned> outerValueIdx;
   auto getOrAddInput = [&](Value v) -> unsigned {
@@ -632,7 +671,6 @@ static void buildSingleSubtiledRegionN(
     return it->second;
   };
 
-  // Pre-register all values that will be yielded from setup.
   for (Value leaf : leafValues)
     getOrAddInput(leaf);
   for (auto &perTile : differing)
@@ -647,6 +685,8 @@ static void buildSingleSubtiledRegionN(
     for (auto &id : equiv.identityOps)
       getOrAddInput(id.varyingOperand);
   }
+  for (Value v : sharedOperands)
+    getOrAddInput(v);
 
   auto regionOp = SubtiledRegionOp::create(
       builder, loc, TypeRange{}, outerValues, ValueRange{}, ValueRange{},
@@ -704,6 +744,10 @@ static void buildSingleSubtiledRegionN(
       setupYieldValues.push_back(identityConst);
     }
   }
+  // Yield shared operands (one yield slot per shared operand, same for
+  // all tiles).
+  for (Value v : sharedOperands)
+    setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[v]));
   SubtiledRegionYieldOp::create(setupBuilder, loc, setupYieldValues);
 
   // --- Tile Region ---
@@ -726,6 +770,9 @@ static void buildSingleSubtiledRegionN(
   // Map identity operands.
   for (auto &id : equiv.identityOps)
     tileMapping.map(id.varyingOperand, tileBlock->getArgument(argIdx++));
+  // Map shared operands.
+  for (Value v : sharedOperands)
+    tileMapping.map(v, tileBlock->getArgument(argIdx++));
 
   for (Operation *op : tplChain)
     tileBuilder.clone(*op, tileMapping);
