@@ -462,9 +462,16 @@ void pushSharedSetupToTile(SubtiledRegionOp op) {
   }
 
   // Replace tile block args with cloned values (or external values).
+  // When the yield value is a setup block arg (from inputs), use the
+  // corresponding input value from outside the SubtiledRegionOp.
   for (auto &sa : movableArgs) {
     Value yieldVal = setupYield.getResults()[sa.yieldIndex];
     Value replacement = cloneMapping.lookupOrDefault(yieldVal);
+    if (auto blockArg = dyn_cast<BlockArgument>(replacement)) {
+      if (blockArg.getOwner() == &setupBlock) {
+        replacement = op.getInputs()[blockArg.getArgNumber()];
+      }
+    }
     tileBlock.getArgument(sa.argPosition).replaceAllUsesWith(replacement);
   }
 
