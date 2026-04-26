@@ -3529,27 +3529,42 @@ void insertAsyncComm(
       // Use token for producer acquire and consumer release.
       if (commChannel.consumerBarriers.empty()) {
         // Insert ProducerAcquireOp before the producer.
-        // Even when A is nested inside B we still need to place
-        // the acquire right before the head producer to avoid
-        // reordering the barriers incorrectly. This acquire will
-        // be idemponent in the loop because we don't flip the phase.
         auto producerAcquirePoint =
-            getSameLevelOp(headConsumer, tmaHeadProducer); // tmaHeadProducer;
-        builder.setAsynTaskIdsFromArray(masterChannel->relation.first);
-        if (producerAcquireForChannelLoop) {
-          builder.setInsertionPoint(producerAcquireForChannelLoop);
-          builder.setLoopScheduleInfoFromOp(producerAcquireForChannelLoop);
+            getSameLevelOp(headConsumer, tmaHeadProducer);
+        // If the producer is inside a SubtiledRegionOp, use
+        // annotation instead of inline op.
+        auto producerSubtiled =
+            getEnclosingSubtiledRegionTile(producerAcquirePoint);
+        if (!producerSubtiled)
+          producerSubtiled = getEnclosingSubtiledRegionTile(tmaHeadProducer);
+        if (producerSubtiled) {
+          auto annotTarget = getEnclosingSubtiledRegionTile(tmaHeadProducer)
+                                 ? tmaHeadProducer
+                                 : producerAcquirePoint;
+          unsigned targetOpIdx =
+              getOrAssignStableId(producerSubtiled, annotTarget);
+          addTokenAnnotation(producerSubtiled, token.second, bufferIdx, phase,
+                             ttng::BarrierPlacement::BEFORE, targetOpIdx,
+                             "producer_acquire");
+          LDBG("create ProducerAcquire annotation on SubtiledRegionOp "
+               << masterChannel->uniqID << " ");
         } else {
-          builder.setInsertionPoint(producerAcquirePoint);
-          builder.setLoopScheduleInfoFromOp(producerAcquirePoint);
+          builder.setAsynTaskIdsFromArray(masterChannel->relation.first);
+          if (producerAcquireForChannelLoop) {
+            builder.setInsertionPoint(producerAcquireForChannelLoop);
+            builder.setLoopScheduleInfoFromOp(producerAcquireForChannelLoop);
+          } else {
+            builder.setInsertionPoint(producerAcquirePoint);
+            builder.setLoopScheduleInfoFromOp(producerAcquirePoint);
+          }
+          auto acquireOp =
+              builder.createWithAsyncTaskIds<ttnvws::ProducerAcquireOp>(
+                  headProducer->getLoc(), token.second, bufferIdx, phase);
+          LLVM_DEBUG({
+            LDBG("Insert ProducerAcquireOp " << masterChannel->uniqID << " ");
+            producerAcquirePoint->dump();
+          });
         }
-        auto acquireOp =
-            builder.createWithAsyncTaskIds<ttnvws::ProducerAcquireOp>(
-                headProducer->getLoc(), token.second, bufferIdx, phase);
-        LLVM_DEBUG({
-          LDBG("Insert ProducerAcquireOp " << masterChannel->uniqID << " ");
-          producerAcquirePoint->dump();
-        });
       }
 
       // Intra-iteration reuse sync: when two channels share a single-buffered
@@ -3669,15 +3684,33 @@ void insertAsyncComm(
         } else {
           producerCommitPoint = getSameLevelOp(headConsumer, tailProducer);
         }
-        LLVM_DEBUG({
-          LDBG("Insert ProducerCommitOp " << masterChannel->uniqID << " ");
-          producerCommitPoint->dump();
-        });
-        builder.setInsertionPointAfter(producerCommitPoint);
-        builder.setLoopScheduleInfoFromOp(producerCommitPoint);
-        auto commitOp =
-            builder.createWithAsyncTaskIds<ttnvws::ProducerCommitOp>(
-                tailProducer->getLoc(), token.second, bufferIdx);
+        // If the producer is inside a SubtiledRegionOp, use annotation.
+        auto commitSubtiled =
+            getEnclosingSubtiledRegionTile(producerCommitPoint);
+        if (!commitSubtiled)
+          commitSubtiled = getEnclosingSubtiledRegionTile(tailProducer);
+        if (commitSubtiled) {
+          auto annotTarget = getEnclosingSubtiledRegionTile(tailProducer)
+                                 ? tailProducer
+                                 : producerCommitPoint;
+          unsigned targetOpIdx =
+              getOrAssignStableId(commitSubtiled, annotTarget);
+          addTokenAnnotation(commitSubtiled, token.second, bufferIdx,
+                             /*phase=*/Value(), ttng::BarrierPlacement::AFTER,
+                             targetOpIdx, "producer_commit");
+          LDBG("create ProducerCommit annotation on SubtiledRegionOp "
+               << masterChannel->uniqID << " ");
+        } else {
+          LLVM_DEBUG({
+            LDBG("Insert ProducerCommitOp " << masterChannel->uniqID << " ");
+            producerCommitPoint->dump();
+          });
+          builder.setInsertionPointAfter(producerCommitPoint);
+          builder.setLoopScheduleInfoFromOp(producerCommitPoint);
+          auto commitOp =
+              builder.createWithAsyncTaskIds<ttnvws::ProducerCommitOp>(
+                  tailProducer->getLoc(), token.second, bufferIdx);
+        }
       }
     }
 
@@ -3705,10 +3738,26 @@ void insertAsyncComm(
         }
         auto consumerWaitPoint =
             getSameLevelOp(headProducer, tokenHeadConsumer);
+        // If the consumer IS a SubtiledRegionOp, use it directly
+        // for annotation with the first tile body op as target.
         auto subtiled = getEnclosingSubtiledRegionTile(consumerWaitPoint);
+        if (!subtiled)
+          subtiled = getEnclosingSubtiledRegionTile(tokenHeadConsumer);
+        if (!subtiled) {
+          if (auto sr = dyn_cast<ttng::SubtiledRegionOp>(tokenHeadConsumer))
+            subtiled = sr;
+        }
         if (subtiled) {
-          unsigned targetOpIdx =
-              getOrAssignStableId(subtiled, consumerWaitPoint);
+          Operation *annotTarget = tokenHeadConsumer;
+          if (isa<ttng::SubtiledRegionOp>(tokenHeadConsumer)) {
+            auto &tileBlock = subtiled.getTileRegion().front();
+            annotTarget = &tileBlock.front();
+          } else if (getEnclosingSubtiledRegionTile(tokenHeadConsumer)) {
+            annotTarget = tokenHeadConsumer;
+          } else {
+            annotTarget = consumerWaitPoint;
+          }
+          unsigned targetOpIdx = getOrAssignStableId(subtiled, annotTarget);
           addTokenAnnotation(subtiled, token.second, bufferIdx, phase,
                              ttng::BarrierPlacement::BEFORE, targetOpIdx,
                              "consumer_wait");
@@ -3761,9 +3810,24 @@ void insertAsyncComm(
         auto consumerReleasePoint =
             consumerReleaseHeuristic(tailProducer, tailConsumer, token.first);
         auto subtiled = getEnclosingSubtiledRegionTile(consumerReleasePoint);
+        if (!subtiled)
+          subtiled = getEnclosingSubtiledRegionTile(tailConsumer);
+        if (!subtiled) {
+          if (auto sr = dyn_cast<ttng::SubtiledRegionOp>(tailConsumer))
+            subtiled = sr;
+        }
         if (subtiled) {
-          unsigned targetOpIdx =
-              getOrAssignStableId(subtiled, consumerReleasePoint);
+          Operation *annotTarget = tailConsumer;
+          if (isa<ttng::SubtiledRegionOp>(tailConsumer)) {
+            // Use the last non-terminator op in tile body for AFTER.
+            auto &tileBlock = subtiled.getTileRegion().front();
+            annotTarget = &*std::prev(tileBlock.without_terminator().end());
+          } else if (getEnclosingSubtiledRegionTile(tailConsumer)) {
+            annotTarget = tailConsumer;
+          } else {
+            annotTarget = consumerReleasePoint;
+          }
+          unsigned targetOpIdx = getOrAssignStableId(subtiled, annotTarget);
           addTokenAnnotation(subtiled, token.second, bufferIdx,
                              /*phase=*/Value(), ttng::BarrierPlacement::AFTER,
                              targetOpIdx, "consumer_release");
