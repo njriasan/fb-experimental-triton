@@ -2715,22 +2715,20 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
         producerOp = user;
       } else if (auto subtiled = dyn_cast<ttng::SubtiledRegionOp>(user)) {
         // The SMEM buffer is passed as an input to the SubtiledRegionOp.
-        // Find the local_store inside the tile region that writes to
-        // the corresponding block argument (routed through setup yield).
+        // Look inside the tile region to classify as producer or consumer.
+        bool foundProducer = false;
+        Block &tileBlock = subtiled.getTileRegion().front();
         for (auto [inputIdx, input] : llvm::enumerate(subtiled.getInputs())) {
           if (input != allocOp->getResult(0))
             continue;
-          // Find the setup block arg → yield → tile arg mapping.
           Block &setupBlock = subtiled.getSetupRegion().front();
           auto setupYield =
               cast<ttng::SubtiledRegionYieldOp>(setupBlock.getTerminator());
           BlockArgument setupArg = setupBlock.getArgument(inputIdx);
-          // Find which yield slots reference this setup arg.
           for (auto [yieldIdx, yieldVal] :
                llvm::enumerate(setupYield.getResults())) {
             if (yieldVal != setupArg)
               continue;
-            Block &tileBlock = subtiled.getTileRegion().front();
             for (auto &tileOp : tileBlock.without_terminator()) {
               auto store = dyn_cast<ttg::LocalStoreOp>(&tileOp);
               if (!store)
@@ -2746,12 +2744,15 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
                           yieldIdx) {
                     if (!producerOp)
                       producerOp = &tileOp;
+                    foundProducer = true;
                   }
                 }
               }
             }
           }
         }
+        if (!foundProducer)
+          consumers.push_back(user);
       } else
         consumers.push_back(user);
     }
