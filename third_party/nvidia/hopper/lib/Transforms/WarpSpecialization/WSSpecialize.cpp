@@ -576,7 +576,7 @@ void specializeRegion(triton::FuncOp funcOp, unsigned requestedRegisters) {
   ImplicitLocOpBuilder impB(opList[0]->getLoc(), opList[0]);
   impB.setInsertionPoint(returnOp);
   auto wsOp = ttg::WarpSpecializeOp::create(impB, dummyTypes, partitionNumWarps,
-                                            nTaskIds.size() - 1);
+                                            partitionNumWarps.size());
 
   // Copy partition types attribute from the loop to the WarpSpecializeOp.
   // This is needed by OptimizePartitionWarps for type-aware warp assignment.

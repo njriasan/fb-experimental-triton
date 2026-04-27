@@ -17,22 +17,26 @@
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // After code partition, we should get a warp_specialize with:
-  //   partition0 (task 1): SubtiledRegionOp with local_store + barriers
-  //   partition1 (task 2): SubtiledRegionOp with TMA copy + barriers
+  //   partition0 (task 1): SubtiledRegionOp with local_store + token annotations
+  //   partition1 (task 2): SubtiledRegionOp with TMA copy + token annotations
   //
   // CHECK-LABEL: @subtiled_smem_channel
   // CHECK: ttg.warp_specialize
   //
-  // Partition 0 (epilogue): SubtiledRegionOp with barrier_annotations
+  // Partition 0 (epilogue): SubtiledRegionOp with producer token annotations
   // CHECK: partition0
   // CHECK:   ttng.subtiled_region
-  // CHECK-SAME: barrier_annotations
+  // CHECK-SAME: token_annotations
+  // CHECK-SAME: producer_acquire
+  // CHECK-SAME: producer_commit
   // CHECK:     ttg.local_store
   //
-  // Partition 1 (store): SubtiledRegionOp with barrier_annotations
+  // Partition 1 (store): SubtiledRegionOp with consumer token annotations
   // CHECK: partition1
   // CHECK:   ttng.subtiled_region
-  // CHECK-SAME: barrier_annotations
+  // CHECK-SAME: token_annotations
+  // CHECK-SAME: consumer_wait
+  // CHECK-SAME: consumer_release
   // CHECK:     ttng.async_tma_copy_local_to_global
   tt.func @subtiled_smem_channel(
       %desc: !tt.tensordesc<tensor<128x64xf16, #shared>>,
@@ -47,6 +51,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     %c10 = arith.constant 10 : index
 
     scf.for %iv = %c0 to %c10 step %c1 {
+      // Dummy task 0 op (MMA/compute placeholder).
+      %dummy = arith.constant {async_task_id = array<i32: 0>} 0 : i32
+
       // Epilogue SubtiledRegionOp (task 1): truncf → local_store
       ttng.subtiled_region
           inputs(%rhs, %lhs, %smem0, %smem1 :
@@ -103,10 +110,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         } teardown {
           ttng.subtiled_region_yield
         }
-    } {async_task_id = array<i32: 1, 2>, tt.warp_specialize,
+    } {async_task_id = array<i32: 0, 1, 2>, tt.warp_specialize,
        tt.separate_epilogue_store = true,
-       ttg.partition.stages = [0 : i32, 0 : i32],
-       ttg.partition.types = ["epilogue", "epilogue_store"]}
+       ttg.partition.stages = [0 : i32, 0 : i32, 0 : i32],
+       ttg.partition.types = ["compute", "epilogue", "epilogue_store"]}
 
     tt.return
   }
