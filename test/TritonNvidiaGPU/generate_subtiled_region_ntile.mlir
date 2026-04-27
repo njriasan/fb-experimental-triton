@@ -18,22 +18,24 @@
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @four_tile_nested_split
+  // Splits happen before the subtiled_region, passed as inputs.
+  // CHECK: tt.split
+  // CHECK: tt.split
+  // CHECK: tt.split
   // CHECK: ttng.subtiled_region
+  // CHECK-SAME: inputs(
   // CHECK-SAME: tile_mappings = [array<i32: 0,
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
   // CHECK-SAME: array<i32: 3,
-  // CHECK:   setup {
-  // CHECK:     tt.split
-  // CHECK:     tt.split
-  // CHECK:     tt.split
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
-  // CHECK-NOT: tt.split
   tt.func @four_tile_nested_split(
       %buf: !ttg.memdesc<128x256xf32, #tmem, #ttng.tensor_memory, mutable>,
       %tok: !ttg.async.token,
@@ -84,7 +86,10 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @eight_tile_nested_split
+  // Splits happen before the subtiled_region, passed as inputs.
+  // CHECK-COUNT-7: tt.split
   // CHECK: ttng.subtiled_region
+  // CHECK-SAME: inputs(
   // CHECK-SAME: tile_mappings = [array<i32: 0,
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
@@ -93,15 +98,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-SAME: array<i32: 5,
   // CHECK-SAME: array<i32: 6,
   // CHECK-SAME: array<i32: 7,
-  // CHECK:   setup {
-  // CHECK-COUNT-7: tt.split
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
-  // CHECK-NOT: tt.split
   tt.func @eight_tile_nested_split(
       %buf: !ttg.memdesc<128x512xf32, #tmem8, #ttng.tensor_memory, mutable>,
       %tok: !ttg.async.token,
@@ -188,13 +192,18 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
   // CHECK-SAME: array<i32: 3,
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     ttg.local_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
   // Second: local_load + convert_layout (task 4)
-  // CHECK: ttng.subtiled_region tile_mappings = [array<i32: 0>, array<i32: 1>, array<i32: 2>, array<i32: 3>]
+  // CHECK: ttng.subtiled_region inputs(
+  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>, array<i32: 2>, array<i32: 3>]
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:   } tile{
   // CHECK:     ttg.local_load
   // CHECK:     ttg.convert_layout

@@ -13,8 +13,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // The shared value (yield[2] = %c42) should be pushed into the tile body
   // and removed from setup yield and tile args.
   // CHECK: ttng.subtiled_region
-  // CHECK:   tile_mappings = [array<i32: 0>, array<i32: 1>]
-  // CHECK:   setup {
+  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
   // CHECK:   } tile{
   // CHECK:     %[[C42:.*]] = arith.constant 42 : i32
@@ -52,8 +53,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-LABEL: @push_shared_external
   // The shared external value should be used directly in the tile body.
   // CHECK: ttng.subtiled_region
-  // CHECK:   tile_mappings = [array<i32: 0>, array<i32: 1>]
-  // CHECK:   setup {
+  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
   // CHECK:   } tile{
   // CHECK:     arith.addi %{{.*}}, %{{.*}}
@@ -85,7 +87,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
   // CHECK-LABEL: @no_shared_args
   // CHECK: tile_mappings = [array<i32: 0>, array<i32: 1>]
-  // CHECK:   setup {
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
   // CHECK:   } tile{
   // CHECK:     arith.index_cast
@@ -116,8 +119,9 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-LABEL: @push_shared_chain
   // Both ops in the chain (constant + addi) should be pushed into tile body.
   // CHECK: ttng.subtiled_region
-  // CHECK:   tile_mappings = [array<i32: 0>, array<i32: 1>]
-  // CHECK:   setup {
+  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
   // CHECK:   } tile{
   // CHECK:     arith.constant 10
@@ -204,7 +208,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-LABEL: @push_tmem_load_to_tile
   // The tile body should receive a memdesc arg and contain tmem_load + convert_layout.
   // CHECK: ttng.subtiled_region
-  // CHECK:   setup {
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.tmem_subslice
   // CHECK:     ttng.tmem_subslice
   // CHECK:     ttng.subtiled_region_yield {{.*}} !ttg.memdesc{{.*}}, !ttg.memdesc

@@ -15,17 +15,21 @@
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @multi_task_setup_tmem_split_optimized
-  // After optimize_tmem_layouts (which converts split to tmem_subslice +
-  // tmem_load) and pushes setup to tile, the SubtiledRegionOp has:
-  // CHECK: ttng.subtiled_region
-  // CHECK:   setup {
-  // CHECK:     ttng.tmem_subslice
-  // CHECK:     ttng.tmem_subslice
+  // After optimize_tmem_layouts, the tmem_subslice + tmem_load + convert are
+  // hoisted outside the subtiled_region and passed as inputs.
+  // CHECK: ttng.tmem_subslice
+  // CHECK: ttng.tmem_load
+  // CHECK: ttg.convert_layout
+  // CHECK: ttng.tmem_subslice
+  // CHECK: ttng.tmem_load
+  // CHECK: ttg.convert_layout
   // CHECK-NOT: tt.split
+  // CHECK: ttng.subtiled_region
+  // CHECK-SAME: inputs(
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{
-  // CHECK:     ttng.tmem_load
-  // CHECK:     ttg.convert_layout
   // CHECK:     arith.truncf
   // CHECK:     ttg.local_store
   // CHECK:     ttng.subtiled_region_yield

@@ -424,23 +424,24 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @four_tile_nested_split
-  // Should produce a single SubtiledRegionOp with 4 tile mappings.
+  // Splits happen before the subtiled_region, passed as inputs.
+  // CHECK: tt.split
+  // CHECK: tt.split
+  // CHECK: tt.split
   // CHECK: ttng.subtiled_region
+  // CHECK-SAME: inputs(
   // CHECK-SAME: tile_mappings = [array<i32: 0,
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
   // CHECK-SAME: array<i32: 3,
-  // CHECK:   setup {
-  // CHECK:     tt.split
-  // CHECK:     tt.split
-  // CHECK:     tt.split
+  // CHECK-SAME: barrier_annotations = []
+  // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
-  // CHECK-NOT: tt.split
   tt.func @four_tile_nested_split(
       %tmem_buf: !ttg.memdesc<128x256xf32, #tmem7, #ttng.tensor_memory, mutable>,
       %acc_tok: !ttg.async.token,

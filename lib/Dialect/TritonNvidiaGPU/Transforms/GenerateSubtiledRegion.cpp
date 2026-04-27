@@ -1457,10 +1457,32 @@ public:
     while (changed) {
       changed = false;
       SmallVector<triton::SplitOp> splitOps;
+      auto feedsIntoSubtiledRegion = [](triton::SplitOp splitOp) {
+        SmallVector<Value> worklist;
+        for (Value r : splitOp->getResults())
+          worklist.push_back(r);
+        DenseSet<Value> visited;
+        while (!worklist.empty()) {
+          Value v = worklist.pop_back_val();
+          if (!visited.insert(v).second)
+            continue;
+          for (Operation *user : v.getUsers()) {
+            if (isa<SubtiledRegionOp>(user))
+              return true;
+            for (Value r : user->getResults())
+              worklist.push_back(r);
+          }
+        }
+        return false;
+      };
       getOperation().walk([&](triton::SplitOp splitOp) {
-        if (!failedSplits.contains(splitOp.getOperation()))
-          if (!splitOp->getParentOfType<SubtiledRegionOp>())
-            splitOps.push_back(splitOp);
+        if (failedSplits.contains(splitOp.getOperation()))
+          return;
+        if (splitOp->getParentOfType<SubtiledRegionOp>())
+          return;
+        if (feedsIntoSubtiledRegion(splitOp))
+          return;
+        splitOps.push_back(splitOp);
       });
       for (auto splitOp : splitOps) {
         auto tmemLoad = traceSetupChain(splitOp);
