@@ -4663,29 +4663,10 @@ void doCodePartitionPost(triton::FuncOp &funcOp, unsigned numBuffers) {
     funcOp.dump();
   });
 
-  // If loadResult has a single use which is LocalAlloc, we can get rid of
-  // sharedLoad and replace all uses of LocalAlloc with viewLoad.
   foldLocalLoads(funcOp);
-  LLVM_DEBUG({
-    LDBG("\n\nsimplify localLoad + localAlloc");
-    funcOp.dump();
-  });
-
-  // Clean up Tokens for tmem, tokens should be threaded within the partitions.
-  // This should also clean up tokens in the ForOp arguments.
   cleanupTmemTokens(funcOp);
-  LLVM_DEBUG({
-    LDBG("\n\nclean up tmem tokens");
-    funcOp.dump();
-  });
-
-  // Replace buffer reuses
   replaceBufferReuse(funcOp, channelsGroupedByConsumers, orderedChannels,
                      &config);
-  LLVM_DEBUG({
-    LDBG("\n\nreplace buffer reuse");
-    funcOp.dump();
-  });
 
   // Lower SubtiledRegionOps whose tile body spans multiple async tasks.
   // Single-task SubtiledRegionOps are preserved and handled by SpecializeOp.

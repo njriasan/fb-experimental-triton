@@ -357,6 +357,9 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
             ArrayAttr::get(op.getContext(), remainingTokenAnnotations));
         op.setBarrierAnnotationsAttr(
             ArrayAttr::get(op.getContext(), newBarrierAnnotations));
+        // Clear token_values if all token annotations have been converted.
+        if (remainingTokenAnnotations.empty())
+          op.getTokenValuesMutable().assign(ValueRange{});
         // Don't erase the SubtiledRegionOp itself.
         return true;
       } else if (auto op = dyn_cast<ttng::TMAStoreTokenWaitOp>(user)) {
