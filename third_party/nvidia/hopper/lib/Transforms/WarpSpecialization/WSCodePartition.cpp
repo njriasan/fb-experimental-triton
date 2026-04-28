@@ -50,10 +50,13 @@ static void lowerTokenAnnotations(ttng::SubtiledRegionOp op) {
   Block &tileBlock = op.getTileRegion().front();
   ValueRange tokenValues = op.getTokenValues();
 
+  // Build a map from side-effect-based positional index to op.
+  // targetOpIdx refers to the Nth side-effecting op in the tile body.
   llvm::DenseMap<unsigned, Operation *> idToOp;
+  unsigned sideEffectIdx = 0;
   for (Operation &tileOp : tileBlock.without_terminator()) {
-    if (auto idAttr = tileOp.getAttrOfType<IntegerAttr>(ttng::kSubtileOpId))
-      idToOp[idAttr.getInt()] = &tileOp;
+    if (!isMemoryEffectFree(&tileOp))
+      idToOp[sideEffectIdx++] = &tileOp;
   }
 
   OpBuilder builder(op);
@@ -104,27 +107,21 @@ static ttng::SubtiledRegionOp getEnclosingSubtiledRegionTile(Operation *op) {
   return nullptr;
 }
 
-/// Assign a stable ID to `targetOp` via an integer attribute and return it.
-/// If the op already has an ID, return the existing one. The ID is unique
-/// within the tile body and survives op insertions/removals by other passes,
-/// unlike positional indices.
-static unsigned getOrAssignStableId(ttng::SubtiledRegionOp subtiled,
-                                    Operation *targetOp) {
-  if (auto existing = targetOp->getAttrOfType<IntegerAttr>(ttng::kSubtileOpId))
-    return existing.getInt();
-
-  // Find the next available ID by scanning existing IDs.
-  unsigned nextId = 0;
+/// Return the side-effect-based positional index of `targetOp` within
+/// the tile body. targetOpIdx in barrier/token annotations refers to the
+/// Nth side-effecting (non-pure) op, which is stable across CSE and
+/// canonicalization removing pure ops like convert_layout.
+static unsigned getSideEffectIndex(ttng::SubtiledRegionOp subtiled,
+                                   Operation *targetOp) {
   Block &tileBlock = subtiled.getTileRegion().front();
+  unsigned idx = 0;
   for (Operation &op : tileBlock.without_terminator()) {
-    if (auto idAttr = op.getAttrOfType<IntegerAttr>(ttng::kSubtileOpId))
-      nextId = std::max(nextId, static_cast<unsigned>(idAttr.getInt()) + 1);
+    if (&op == targetOp)
+      return idx;
+    if (!isMemoryEffectFree(&op))
+      ++idx;
   }
-
-  targetOp->setAttr(
-      ttng::kSubtileOpId,
-      IntegerAttr::get(IntegerType::get(targetOp->getContext(), 32), nextId));
-  return nextId;
+  llvm_unreachable("targetOp not found in tile body");
 }
 
 /// Add a token annotation to a SubtiledRegionOp instead of creating an
@@ -3540,7 +3537,7 @@ void insertAsyncComm(
                                  ? tmaHeadProducer
                                  : producerAcquirePoint;
           unsigned targetOpIdx =
-              getOrAssignStableId(producerSubtiled, annotTarget);
+              getSideEffectIndex(producerSubtiled, annotTarget);
           addTokenAnnotation(producerSubtiled, token.second, bufferIdx, phase,
                              ttng::BarrierPlacement::BEFORE, targetOpIdx,
                              "producer_acquire");
@@ -3692,7 +3689,7 @@ void insertAsyncComm(
                                  ? tailProducer
                                  : producerCommitPoint;
           unsigned targetOpIdx =
-              getOrAssignStableId(commitSubtiled, annotTarget);
+              getSideEffectIndex(commitSubtiled, annotTarget);
           addTokenAnnotation(commitSubtiled, token.second, bufferIdx,
                              /*phase=*/Value(), ttng::BarrierPlacement::AFTER,
                              targetOpIdx, "producer_commit");
@@ -3755,7 +3752,7 @@ void insertAsyncComm(
           } else {
             annotTarget = consumerWaitPoint;
           }
-          unsigned targetOpIdx = getOrAssignStableId(subtiled, annotTarget);
+          unsigned targetOpIdx = getSideEffectIndex(subtiled, annotTarget);
           addTokenAnnotation(subtiled, token.second, bufferIdx, phase,
                              ttng::BarrierPlacement::BEFORE, targetOpIdx,
                              "consumer_wait");
@@ -3825,7 +3822,7 @@ void insertAsyncComm(
           } else {
             annotTarget = consumerReleasePoint;
           }
-          unsigned targetOpIdx = getOrAssignStableId(subtiled, annotTarget);
+          unsigned targetOpIdx = getSideEffectIndex(subtiled, annotTarget);
           addTokenAnnotation(subtiled, token.second, bufferIdx,
                              /*phase=*/Value(), ttng::BarrierPlacement::AFTER,
                              targetOpIdx, "consumer_release");

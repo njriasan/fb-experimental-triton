@@ -160,8 +160,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
 
   // CHECK-LABEL: @barrier_annotation_reindex
-  // Barrier annotations use stable op IDs (subtile_op_id attribute), so
-  // targetOpIdx is unchanged even when ops are inserted before the target.
+  // Barrier annotations use side-effect-based positional indices, so
+  // targetOpIdx is unchanged when pure ops are inserted before the target.
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: barrier_annotations =
   // CHECK-SAME: targetOpIdx = 0
@@ -182,7 +182,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         %c42 = arith.constant 42 : i32
         ttng.subtiled_region_yield %c0, %c128, %c42 : i32, i32, i32
       } tile(%arg0: i32, %arg1: i32) {
-        %sum = arith.addi %arg0, %arg1 {subtile_op_id = 0 : i32} : i32
+        %sum = arith.addi %arg0, %arg1 : i32
         ttng.subtiled_region_yield
       } teardown {
         ttng.subtiled_region_yield
@@ -294,12 +294,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
   // CHECK-LABEL: @barrier_after_pushed_ops
   // After pushing the shared constant, the barrier annotation on the muli
-  // (subtile_op_id=0) should still target the muli, not the pushed constant.
+  // should still target the muli, not the pushed constant.
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: targetOpIdx = 0
   // CHECK:   } tile{
   // CHECK:     arith.constant 42
-  // CHECK:     arith.muli {{.*}} {subtile_op_id = 0 : i32}
+  // CHECK:     arith.muli {{.*}}
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
   tt.func @barrier_after_pushed_ops(
@@ -319,7 +319,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         %c42 = arith.constant 42 : i32
         ttng.subtiled_region_yield %c0, %c128, %c42 : i32, i32, i32
       } tile(%arg0: i32, %arg1: i32) {
-        %prod = arith.muli %arg0, %arg1 {subtile_op_id = 0 : i32} : i32
+        %prod = arith.muli %arg0, %arg1 : i32
         ttng.subtiled_region_yield
       } teardown {
         ttng.subtiled_region_yield

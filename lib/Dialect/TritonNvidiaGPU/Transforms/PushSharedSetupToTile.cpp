@@ -532,8 +532,8 @@ void pushSharedSetupToTile(SubtiledRegionOp op) {
                                 newYieldValues);
   setupYield.erase();
 
-  // No barrier annotation adjustment needed — annotations use stable op IDs
-  // (subtile_op_id attributes) that survive tile body transformations.
+  // No barrier annotation adjustment needed — annotations use side-effect-based
+  // positional indices that are stable across pure op insertions/removals.
 }
 
 } // anonymous namespace

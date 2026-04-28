@@ -198,7 +198,6 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
         }
       }
 
-      tileOp.removeAttr(kSubtileOpId);
       builder.clone(tileOp, tileMapping);
 
       if (hasSideEffects) {
