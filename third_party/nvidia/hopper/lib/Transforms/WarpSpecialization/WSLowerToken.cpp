@@ -222,6 +222,15 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
           builder, loc, singleBarrierMemDescType, bufferEmptyArray, idx);
       ttng::InitBarrierOp::create(builder, loc, barrierEmptyView,
                                   1); // bufferEmptyCount);
+      // Pre-arrive on the empty barrier so the producer's first
+      // wait_barrier returns immediately, but ONLY for tokens used by
+      // SubtiledRegionOps.  For regular SMEM/TMEM barriers, the pipeline
+      // handles first-iteration semantics via phase initialization.
+      bool hasSubtiledUser = llvm::any_of(usersForToken, [](Operation *u) {
+        return isa<ttng::SubtiledRegionOp>(u);
+      });
+      if (hasSubtiledUser)
+        ttng::ArriveBarrierOp::create(builder, loc, barrierEmptyView, 1);
     }
 
     assert(numCTAs == 1 && "remote CTA is not supported yet");

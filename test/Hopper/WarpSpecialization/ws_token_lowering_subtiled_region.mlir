@@ -23,13 +23,25 @@
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @persistent_subtile_token_lowering
+  //
+  // Verify empty barrier is pre-arrived for first-iteration semantics:
+  // CHECK: ttng.init_barrier %{{.*}}, 1
+  // CHECK: ttng.init_barrier %{{.*}}, 1
+  // CHECK: ttng.arrive_barrier %{{.*}}, 1
+  // CHECK: gpu.barrier
+  //
   // After token lowering, SubtiledRegionOps should have barrier_annotations
   // (not token_annotations) with proper wait/arrive barrier ops.
+  // Both partitions use the same physical barriers (consistent ordering).
   // CHECK: ttg.warp_specialize
+  //
+  // Partition 0 (epilogue): SubtiledRegionOp with barrier_annotations
   // CHECK: partition0
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: barrier_annotations
   // CHECK-NOT: token_annotations
+  //
+  // Partition 1 (store): SubtiledRegionOp with barrier_annotations
   // CHECK: partition1
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: barrier_annotations
