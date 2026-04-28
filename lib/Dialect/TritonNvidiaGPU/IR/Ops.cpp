@@ -1230,63 +1230,7 @@ LogicalResult SubtiledRegionOp::verify() {
              << lastArgType;
   }
 
-  // Count non-terminator ops in each region for targetOpIdx validation.
-  unsigned numTileOps = 0;
-  for (Operation &op : tileBlock.without_terminator())
-    ++numTileOps;
-  unsigned numSetupOps = 0;
-  for (Operation &op : setupBlock.without_terminator())
-    ++numSetupOps;
-  unsigned numTeardownOps = 0;
-  for (Operation &op : teardownBlock.without_terminator())
-    ++numTeardownOps;
-
-  // 9-10. Validate barrier annotations
-  unsigned numBarriers = getBarriers().size();
-  unsigned numAccumCnts = getAccumCnts().size();
-  for (auto [i, attr] : llvm::enumerate(getBarrierAnnotations())) {
-    auto annotation = dyn_cast<BarrierAnnotationAttr>(attr);
-    if (!annotation)
-      return emitOpError("barrierAnnotations[")
-             << i << "] must be a BarrierAnnotationAttr";
-
-    // 9. barrierIdx in range
-    if (annotation.getBarrierIdx() >= numBarriers)
-      return emitOpError("barrierAnnotations[")
-             << i << "] has barrierIdx=" << annotation.getBarrierIdx()
-             << " but there are only " << numBarriers << " barriers";
-
-    // 10. For wait_barrier, check accumCnt exists
-    if (annotation.getBarrierOpKind().getValue() == "wait_barrier") {
-      if (annotation.getBarrierIdx() >= numAccumCnts)
-        return emitOpError("barrierAnnotations[")
-               << i << "] is a wait_barrier with barrierIdx="
-               << annotation.getBarrierIdx() << " but there are only "
-               << numAccumCnts << " accumCnts";
-    }
-
-    // Validate barrierOpKind is one of the known values
-    StringRef kind = annotation.getBarrierOpKind().getValue();
-    if (kind != "wait_barrier" && kind != "arrive_barrier")
-      return emitOpError("barrierAnnotations[")
-             << i << "] has unknown barrierOpKind '" << kind << "'";
-
-    // Validate targetOpIdx is in range for the target region
-    BarrierRegion region = annotation.getRegion();
-    unsigned maxOps = (region == BarrierRegion::SETUP)      ? numSetupOps
-                      : (region == BarrierRegion::TEARDOWN) ? numTeardownOps
-                                                            : numTileOps;
-    const char *regionName = (region == BarrierRegion::SETUP)      ? "setup"
-                             : (region == BarrierRegion::TEARDOWN) ? "teardown"
-                                                                   : "tile";
-    if (annotation.getTargetOpIdx() >= maxOps)
-      return emitOpError("barrierAnnotations[")
-             << i << "] has targetOpIdx=" << annotation.getTargetOpIdx()
-             << " but " << regionName << " region has only " << maxOps
-             << " non-terminator ops";
-  }
-
-  // 11. All ops in the tile body must have the same async_task_id set.
+  // 9. All ops in the tile body must have the same async_task_id set.
   // Multi-task SubtiledRegionOps must be lowered before reaching this
   // point (they are handled as fallbacks in doCodePartitionPost).
   DenseI32ArrayAttr firstTaskIds;

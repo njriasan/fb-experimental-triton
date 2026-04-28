@@ -9,144 +9,19 @@ namespace nvidia_gpu {
 #define GEN_PASS_DEF_TRITONNVIDIAGPULOWERSUBTILEDREGIONPASS
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h.inc"
 
-/// Compute the phase from an accumulation count and number of buffers:
-///   phase = (accumCnt / numBuffers) & 1
-/// Returns an i32 value.
-static Value computePhase(OpBuilder &builder, Location loc, Value accumCnt,
-                          unsigned numBuffers) {
-  Value numBuf = arith::ConstantOp::create(
-      builder, loc, builder.getI64IntegerAttr(numBuffers));
-  Value div = arith::DivUIOp::create(builder, loc, accumCnt, numBuf);
-  Value one64 =
-      arith::ConstantOp::create(builder, loc, builder.getI64IntegerAttr(1));
-  Value andOp = arith::AndIOp::create(builder, loc, div, one64);
-  return arith::TruncIOp::create(builder, loc, builder.getI32Type(), andOp);
-}
-
-/// Compute tileAccumCnt = outerAccumCnt + tileIdx (as i64).
-static Value computeTileAccumCnt(OpBuilder &builder, Location loc,
-                                 Value outerAccumCnt, unsigned tileIdx) {
-  Value tileIdxVal = arith::ConstantOp::create(
-      builder, loc, builder.getI64IntegerAttr(tileIdx));
-  return arith::AddIOp::create(builder, loc, outerAccumCnt, tileIdxVal);
-}
-
-/// Emit a barrier operation based on the annotation kind.
-/// For tile region annotations with a tileMask, `tileIdx` is used to compute
-/// the per-tile buffer index and phase. For setup/teardown annotations,
-/// the static barrierIdx is used directly.
-static void emitBarrierOp(OpBuilder &builder, Location loc,
-                          BarrierAnnotationAttr annotation, ValueRange barriers,
-                          ValueRange accumCnts, unsigned tileIdx) {
-  unsigned numBuffers = annotation.getNumBuffers();
-  StringRef kind = annotation.getBarrierOpKind().getValue();
-
-  unsigned barrierIdx = annotation.getBarrierIdx();
-
-  if (kind == "wait_barrier") {
-    Value outerAccumCnt = accumCnts[barrierIdx];
-    Value tileAccumCnt =
-        computeTileAccumCnt(builder, loc, outerAccumCnt, tileIdx);
-    Value phase = computePhase(builder, loc, tileAccumCnt, numBuffers);
-    WaitBarrierOp::create(builder, loc, barriers[barrierIdx], phase);
-  } else {
-    assert(kind == "arrive_barrier");
-    ArriveBarrierOp::create(builder, loc, barriers[barrierIdx],
-                            annotation.getCount());
-  }
-}
-
-/// Emit barrier ops for a list of annotations at a given op index in a
-/// region block, using the provided builder. Uses static barrierIdx
-/// (no tile-mapped resolution — for setup/teardown regions).
-static void emitBarriersForRegion(
-    OpBuilder &builder, Location loc, Block &block,
-    llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> &beforeMap,
-    llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> &afterMap,
-    ValueRange barriers, ValueRange accumCnts, IRMapping &mapping) {
-  unsigned opIdx = 0;
-  for (Operation &op : block.without_terminator()) {
-    auto itBefore = beforeMap.find(opIdx);
-    if (itBefore != beforeMap.end()) {
-      for (auto &annotation : itBefore->second)
-        emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
-                      annotation.getBarrierIdx());
-    }
-
-    builder.clone(op, mapping);
-
-    auto itAfter = afterMap.find(opIdx);
-    if (itAfter != afterMap.end()) {
-      for (auto &annotation : itAfter->second)
-        emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
-                      annotation.getBarrierIdx());
-    }
-    ++opIdx;
-  }
-}
-
-/// Check if a tile annotation should fire for a given tile index.
-/// Empty tileMask means fire on all tiles.
-static bool isTileEnabled(BarrierAnnotationAttr annotation, unsigned tileIdx) {
-  auto mask = annotation.getTileMask();
-  if (!mask || mask.empty())
-    return true;
-  return tileIdx < static_cast<unsigned>(mask.size()) && mask[tileIdx] != 0;
-}
-
 void lowerSubtiledRegion(SubtiledRegionOp op) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
 
-  ValueRange barriers = op.getBarriers();
-  ValueRange accumCnts = op.getAccumCnts();
-
-  // Pre-process barrier annotations by region and target op ID.
-  // targetOpIdx refers to the positional index among side-effecting
-  // (non-pure) ops in the tile body. This is robust against CSE and
-  // canonicalization removing pure ops like convert_layout.
-  llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> tileBefore,
-      tileAfter;
-  llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> setupBefore,
-      setupAfter, teardownBefore, teardownAfter;
-
-  for (Attribute attr : op.getBarrierAnnotations()) {
-    auto annotation = cast<BarrierAnnotationAttr>(attr);
-    unsigned targetId = annotation.getTargetOpIdx();
-    BarrierRegion region = annotation.getRegion();
-
-    if (region == BarrierRegion::SETUP) {
-      if (annotation.getPlacement() == BarrierPlacement::BEFORE)
-        setupBefore[targetId].push_back(annotation);
-      else
-        setupAfter[targetId].push_back(annotation);
-    } else if (region == BarrierRegion::TEARDOWN) {
-      if (annotation.getPlacement() == BarrierPlacement::BEFORE)
-        teardownBefore[targetId].push_back(annotation);
-      else
-        teardownAfter[targetId].push_back(annotation);
-    } else {
-      if (annotation.getPlacement() == BarrierPlacement::BEFORE)
-        tileBefore[targetId].push_back(annotation);
-      else
-        tileAfter[targetId].push_back(annotation);
-    }
-  }
-
-  // 1. Clone setup region ops (except yield), emitting setup barriers.
+  // 1. Clone setup region ops (except yield).
   // Map setup block args to the corresponding inputs (IsolatedFromAbove).
   Block &setupBlock = op.getSetupRegion().front();
   IRMapping setupMapping;
   for (auto [blockArg, input] :
        llvm::zip(setupBlock.getArguments(), op.getInputs()))
     setupMapping.map(blockArg, input);
-  if (setupBefore.empty() && setupAfter.empty()) {
-    for (Operation &setupOp : setupBlock.without_terminator())
-      builder.clone(setupOp, setupMapping);
-  } else {
-    emitBarriersForRegion(builder, loc, setupBlock, setupBefore, setupAfter,
-                          barriers, accumCnts, setupMapping);
-  }
+  for (Operation &setupOp : setupBlock.without_terminator())
+    builder.clone(setupOp, setupMapping);
 
   // 2. Collect remapped setup outputs from the cloned yield operands.
   auto yieldOp = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
@@ -166,6 +41,9 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   bool hasTileIndex = (numTileArgs == mappingSize + 1);
 
   // 3. For each tile, clone tile region ops with substitution.
+  // Barrier ops (wait_barrier, arrive_barrier) are placed outside the
+  // SubtiledRegionOp by doTokenLowering, so the tile body just contains
+  // the compute/store ops to clone.
   for (unsigned tileIdx = 0; tileIdx < numTiles; ++tileIdx) {
     auto indices = cast<DenseI32ArrayAttr>(tileMappings[tileIdx]);
     IRMapping tileMapping;
@@ -179,52 +57,15 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
       tileMapping.map(tileBlock.getArgument(numTileArgs - 1), tileIdxConst);
     }
 
-    // Emit barrier ops from barrier_annotations, keyed by
-    // side-effect-based positional index.  targetOpIdx refers to the Nth
-    // side-effecting op, which is stable across CSE removing pure ops.
-    unsigned sideEffectIdx = 0;
-    for (Operation &tileOp : tileBlock.without_terminator()) {
-      bool hasSideEffects = !isMemoryEffectFree(&tileOp);
-      unsigned opId = hasSideEffects ? sideEffectIdx : ~0u;
-
-      if (hasSideEffects) {
-        auto it = tileBefore.find(opId);
-        if (it != tileBefore.end()) {
-          for (auto &annotation : it->second) {
-            if (isTileEnabled(annotation, tileIdx))
-              emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
-                            tileIdx);
-          }
-        }
-      }
-
+    for (Operation &tileOp : tileBlock.without_terminator())
       builder.clone(tileOp, tileMapping);
-
-      if (hasSideEffects) {
-        auto it = tileAfter.find(opId);
-        if (it != tileAfter.end()) {
-          for (auto &annotation : it->second) {
-            if (isTileEnabled(annotation, tileIdx))
-              emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
-                            tileIdx);
-          }
-        }
-        ++sideEffectIdx;
-      }
-    }
   }
 
-  // 4. Clone teardown region ops (except terminator), emitting teardown
-  // barriers.
+  // 4. Clone teardown region ops (except terminator).
   Block &teardownBlock = op.getTeardownRegion().front();
   IRMapping teardownMapping;
-  if (teardownBefore.empty() && teardownAfter.empty()) {
-    for (Operation &teardownOp : teardownBlock.without_terminator())
-      builder.clone(teardownOp, teardownMapping);
-  } else {
-    emitBarriersForRegion(builder, loc, teardownBlock, teardownBefore,
-                          teardownAfter, barriers, accumCnts, teardownMapping);
-  }
+  for (Operation &teardownOp : teardownBlock.without_terminator())
+    builder.clone(teardownOp, teardownMapping);
 
   // 5. Replace op results with teardown yield values.
   auto teardownTerminator =

@@ -289,12 +289,10 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         deprecatedOps.push_back(user);
         return true;
       } else if (auto op = dyn_cast<ttng::SubtiledRegionOp>(user)) {
-        // Convert TokenAnnotationAttr → BarrierAnnotationAttr for annotations
-        // that reference this token.
+        // Place barrier ops directly before/after the SubtiledRegionOp
+        // instead of creating barrier_annotations. This avoids the
+        // fragile targetOpIdx mechanism entirely.
         Value tokenVal = createTokenOp.getResult();
-        // Find which tokenValues indices reference this token.
-        // Inside warp_specialize partitions, SubtiledRegionOps reference the
-        // block argument rather than the outer token value, so check both.
         SmallVector<unsigned> tokenIndices;
         for (unsigned i = 0; i < op.getTokenValues().size(); ++i) {
           Value tv = op.getTokenValues()[i];
@@ -304,64 +302,7 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         if (tokenIndices.empty())
           return false;
 
-        // Pre-add both full and empty barriers at fixed indices so all
-        // SubtiledRegionOps use a consistent ordering:
-        //   barrierIdx 0 = full barrier (producer_commit / consumer_wait)
-        //   barrierIdx 1 = empty barrier (producer_acquire / consumer_release)
-        // This prevents the ordering bug where different SubtiledRegionOps
-        // add barriers in different orders based on their annotation order.
-        Value firstIdx = op.getTokenValues()[
-            cast<ttng::TokenAnnotationAttr>(op.getTokenAnnotations()[0])
-                .getBufferIdxIdx()];
-        Value fullBarrier = extractBufferFull(loc, firstIdx);
-        Value emptyBarrier = extractBufferEmpty(loc, firstIdx);
-        unsigned fullBarrierIdx = op.getBarriers().size();
-        unsigned emptyBarrierIdx = fullBarrierIdx + 1;
-        {
-          SmallVector<Value> newBarriers(op.getBarriers());
-          newBarriers.push_back(fullBarrier);
-          newBarriers.push_back(emptyBarrier);
-          op.getBarriersMutable().assign(newBarriers);
-        }
-
-        // Find the phase/accumCnt for the wait barrier from the
-        // token annotations. The wait could be producer_acquire or
-        // consumer_wait — whichever has a phaseIdx.
-        Value accumCntForWait;
-        for (Attribute attr : op.getTokenAnnotations()) {
-          auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
-          if (!llvm::is_contained(tokenIndices, annotation.getTokenIdx()))
-            continue;
-          StringRef kind = annotation.getTokenOpKind().getValue();
-          if (kind == "producer_acquire" || kind == "consumer_wait") {
-            int phaseIdx = annotation.getPhaseIdx();
-            if (phaseIdx >= 0) {
-              Value phase = op.getTokenValues()[phaseIdx];
-              accumCntForWait = arith::ExtUIOp::create(
-                  builder, loc, builder.getI64Type(), phase);
-            }
-          }
-        }
-        if (!accumCntForWait)
-          accumCntForWait = arith::ConstantOp::create(
-              builder, loc, builder.getI64IntegerAttr(0));
-
-        // Add accumCnts: full barrier gets the wait's accumCnt,
-        // empty barrier gets a zero placeholder.
-        {
-          Value zero = arith::ConstantOp::create(
-              builder, loc, builder.getI64IntegerAttr(0));
-          SmallVector<Value> newAccumCnts(op.getAccumCnts());
-          newAccumCnts.push_back(accumCntForWait);
-          newAccumCnts.push_back(zero);
-          op.getAccumCntsMutable().assign(newAccumCnts);
-        }
-
-        // Now create barrier annotations referencing fixed indices.
         SmallVector<Attribute> remainingTokenAnnotations;
-        SmallVector<Attribute> newBarrierAnnotations(
-            op.getBarrierAnnotations().begin(),
-            op.getBarrierAnnotations().end());
 
         for (Attribute attr : op.getTokenAnnotations()) {
           auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
@@ -373,40 +314,58 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
           }
 
           StringRef kind = annotation.getTokenOpKind().getValue();
-          unsigned barrierIdx;
-          StringRef barrierKind;
-          unsigned count = 1;
+          Value idx = op.getTokenValues()[annotation.getBufferIdxIdx()];
+
           if (kind == "producer_acquire") {
-            barrierIdx = emptyBarrierIdx;
-            barrierKind = "wait_barrier";
+            // Wait on empty barrier BEFORE the SubtiledRegionOp.
+            Value barrier = extractBufferEmpty(loc, idx);
+            int phaseIdx = annotation.getPhaseIdx();
+            OpBuilder beforeBuilder(op);
+            Value phase;
+            if (phaseIdx >= 0) {
+              Value phaseVal = op.getTokenValues()[phaseIdx];
+              phase = arith::ExtUIOp::create(
+                  beforeBuilder, loc, beforeBuilder.getI32Type(), phaseVal);
+            } else {
+              phase = arith::ConstantOp::create(
+                  beforeBuilder, loc, beforeBuilder.getI32IntegerAttr(0));
+            }
+            ttng::WaitBarrierOp::create(beforeBuilder, loc, barrier, phase);
           } else if (kind == "producer_commit") {
-            barrierIdx = fullBarrierIdx;
-            barrierKind = "arrive_barrier";
-            count = std::max(1u, bufferFullCount);
+            // Arrive on full barrier AFTER the SubtiledRegionOp.
+            Value barrier = extractBufferFull(loc, idx);
+            OpBuilder afterBuilder(op->getContext());
+            afterBuilder.setInsertionPointAfter(op);
+            ttng::ArriveBarrierOp::create(afterBuilder, loc, barrier,
+                                          std::max(1u, bufferFullCount));
           } else if (kind == "consumer_wait") {
-            barrierIdx = fullBarrierIdx;
-            barrierKind = "wait_barrier";
+            // Wait on full barrier BEFORE the SubtiledRegionOp.
+            Value barrier = extractBufferFull(loc, idx);
+            int phaseIdx = annotation.getPhaseIdx();
+            OpBuilder beforeBuilder(op);
+            Value phase;
+            if (phaseIdx >= 0) {
+              Value phaseVal = op.getTokenValues()[phaseIdx];
+              phase = arith::ExtUIOp::create(
+                  beforeBuilder, loc, beforeBuilder.getI32Type(), phaseVal);
+            } else {
+              phase = arith::ConstantOp::create(
+                  beforeBuilder, loc, beforeBuilder.getI32IntegerAttr(0));
+            }
+            ttng::WaitBarrierOp::create(beforeBuilder, loc, barrier, phase);
           } else {
             assert(kind == "consumer_release");
-            barrierIdx = emptyBarrierIdx;
-            barrierKind = "arrive_barrier";
-            count = std::max(1u, bufferEmptyCount);
+            // Arrive on empty barrier AFTER the SubtiledRegionOp.
+            Value barrier = extractBufferEmpty(loc, idx);
+            OpBuilder afterBuilder(op->getContext());
+            afterBuilder.setInsertionPointAfter(op);
+            ttng::ArriveBarrierOp::create(afterBuilder, loc, barrier,
+                                          std::max(1u, bufferEmptyCount));
           }
-
-          auto barrierAnnotation = ttng::BarrierAnnotationAttr::get(
-              op.getContext(), barrierIdx, annotation.getPlacement(),
-              annotation.getTargetOpIdx(),
-              StringAttr::get(op.getContext(), barrierKind), count,
-              annotation.getRegion(),
-              /*numBuffers=*/1, /*tileMask=*/nullptr);
-          newBarrierAnnotations.push_back(barrierAnnotation);
         }
 
         op.setTokenAnnotationsAttr(
             ArrayAttr::get(op.getContext(), remainingTokenAnnotations));
-        op.setBarrierAnnotationsAttr(
-            ArrayAttr::get(op.getContext(), newBarrierAnnotations));
-        // Clear token_values if all token annotations have been converted.
         if (remainingTokenAnnotations.empty())
           op.getTokenValuesMutable().assign(ValueRange{});
         // Don't erase the SubtiledRegionOp itself.
