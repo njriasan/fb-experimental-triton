@@ -41,14 +41,7 @@ static void emitBarrierOp(OpBuilder &builder, Location loc,
   unsigned numBuffers = annotation.getNumBuffers();
   StringRef kind = annotation.getBarrierOpKind().getValue();
 
-  // For tile region annotations, compute bufferIdx from tileIdx.
-  // For setup/teardown, use the static barrierIdx.
-  unsigned barrierIdx;
-  if (annotation.getRegion() == BarrierRegion::TILE) {
-    barrierIdx = tileIdx % numBuffers;
-  } else {
-    barrierIdx = annotation.getBarrierIdx();
-  }
+  unsigned barrierIdx = annotation.getBarrierIdx();
 
   if (kind == "wait_barrier") {
     Value outerAccumCnt = accumCnts[barrierIdx];
@@ -92,6 +85,15 @@ static void emitBarriersForRegion(
   }
 }
 
+/// Check if a tile annotation should fire for a given tile index.
+/// Empty tileMask means fire on all tiles.
+static bool isTileEnabled(BarrierAnnotationAttr annotation, unsigned tileIdx) {
+  auto mask = annotation.getTileMask();
+  if (!mask || mask.empty())
+    return true;
+  return tileIdx < static_cast<unsigned>(mask.size()) && mask[tileIdx] != 0;
+}
+
 void lowerSubtiledRegion(SubtiledRegionOp op) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
@@ -100,8 +102,11 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   ValueRange accumCnts = op.getAccumCnts();
 
   // Pre-process barrier annotations by region and target op ID.
-  // Tile body barriers are already inline (injected by doCodePartitionPost
-  // and doTokenLowering), so only setup/teardown annotations are handled.
+  // targetOpIdx refers to the positional index among side-effecting
+  // (non-pure) ops in the tile body. This is robust against CSE and
+  // canonicalization removing pure ops like convert_layout.
+  llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> tileBefore,
+      tileAfter;
   llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> setupBefore,
       setupAfter, teardownBefore, teardownAfter;
 
@@ -120,6 +125,11 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
         teardownBefore[targetId].push_back(annotation);
       else
         teardownAfter[targetId].push_back(annotation);
+    } else {
+      if (annotation.getPlacement() == BarrierPlacement::BEFORE)
+        tileBefore[targetId].push_back(annotation);
+      else
+        tileAfter[targetId].push_back(annotation);
     }
   }
 
@@ -169,12 +179,39 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
       tileMapping.map(tileBlock.getArgument(numTileArgs - 1), tileIdxConst);
     }
 
-    // Barrier ops (wait_barrier, arrive_barrier) are already inline in
-    // the tile body — injected by doCodePartitionPost and converted from
-    // tokens to barriers by doTokenLowering.  Just clone everything.
+    // Emit barrier ops from barrier_annotations, keyed by
+    // side-effect-based positional index.  targetOpIdx refers to the Nth
+    // side-effecting op, which is stable across CSE removing pure ops.
+    unsigned sideEffectIdx = 0;
     for (Operation &tileOp : tileBlock.without_terminator()) {
+      bool hasSideEffects = !isMemoryEffectFree(&tileOp);
+      unsigned opId = hasSideEffects ? sideEffectIdx : ~0u;
+
+      if (hasSideEffects) {
+        auto it = tileBefore.find(opId);
+        if (it != tileBefore.end()) {
+          for (auto &annotation : it->second) {
+            if (isTileEnabled(annotation, tileIdx))
+              emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
+                            tileIdx);
+          }
+        }
+      }
+
       tileOp.removeAttr(kSubtileOpId);
       builder.clone(tileOp, tileMapping);
+
+      if (hasSideEffects) {
+        auto it = tileAfter.find(opId);
+        if (it != tileAfter.end()) {
+          for (auto &annotation : it->second) {
+            if (isTileEnabled(annotation, tileIdx))
+              emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
+                            tileIdx);
+          }
+        }
+        ++sideEffectIdx;
+      }
     }
   }
 

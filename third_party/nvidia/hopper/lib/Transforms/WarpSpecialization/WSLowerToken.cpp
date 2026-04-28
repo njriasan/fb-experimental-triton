@@ -295,7 +295,60 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         if (tokenIndices.empty())
           return false;
 
-        // For each matching token annotation, convert to barrier annotation.
+        // Pre-add both full and empty barriers at fixed indices so all
+        // SubtiledRegionOps use a consistent ordering:
+        //   barrierIdx 0 = full barrier (producer_commit / consumer_wait)
+        //   barrierIdx 1 = empty barrier (producer_acquire / consumer_release)
+        // This prevents the ordering bug where different SubtiledRegionOps
+        // add barriers in different orders based on their annotation order.
+        Value firstIdx = op.getTokenValues()[
+            cast<ttng::TokenAnnotationAttr>(op.getTokenAnnotations()[0])
+                .getBufferIdxIdx()];
+        Value fullBarrier = extractBufferFull(loc, firstIdx);
+        Value emptyBarrier = extractBufferEmpty(loc, firstIdx);
+        unsigned fullBarrierIdx = op.getBarriers().size();
+        unsigned emptyBarrierIdx = fullBarrierIdx + 1;
+        {
+          SmallVector<Value> newBarriers(op.getBarriers());
+          newBarriers.push_back(fullBarrier);
+          newBarriers.push_back(emptyBarrier);
+          op.getBarriersMutable().assign(newBarriers);
+        }
+
+        // Find the phase/accumCnt for the wait barrier from the
+        // token annotations. The wait could be producer_acquire or
+        // consumer_wait — whichever has a phaseIdx.
+        Value accumCntForWait;
+        for (Attribute attr : op.getTokenAnnotations()) {
+          auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
+          if (!llvm::is_contained(tokenIndices, annotation.getTokenIdx()))
+            continue;
+          StringRef kind = annotation.getTokenOpKind().getValue();
+          if (kind == "producer_acquire" || kind == "consumer_wait") {
+            int phaseIdx = annotation.getPhaseIdx();
+            if (phaseIdx >= 0) {
+              Value phase = op.getTokenValues()[phaseIdx];
+              accumCntForWait = arith::ExtUIOp::create(
+                  builder, loc, builder.getI64Type(), phase);
+            }
+          }
+        }
+        if (!accumCntForWait)
+          accumCntForWait = arith::ConstantOp::create(
+              builder, loc, builder.getI64IntegerAttr(0));
+
+        // Add accumCnts: full barrier gets the wait's accumCnt,
+        // empty barrier gets a zero placeholder.
+        {
+          Value zero = arith::ConstantOp::create(
+              builder, loc, builder.getI64IntegerAttr(0));
+          SmallVector<Value> newAccumCnts(op.getAccumCnts());
+          newAccumCnts.push_back(accumCntForWait);
+          newAccumCnts.push_back(zero);
+          op.getAccumCntsMutable().assign(newAccumCnts);
+        }
+
+        // Now create barrier annotations referencing fixed indices.
         SmallVector<Attribute> remainingTokenAnnotations;
         SmallVector<Attribute> newBarrierAnnotations(
             op.getBarrierAnnotations().begin(),
@@ -310,58 +363,25 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
             continue;
           }
 
-          // Determine barrier kind and memdesc.
           StringRef kind = annotation.getTokenOpKind().getValue();
-          Value idx = op.getTokenValues()[annotation.getBufferIdxIdx()];
-          Value barrier;
+          unsigned barrierIdx;
           StringRef barrierKind;
           unsigned count = 1;
           if (kind == "producer_acquire") {
-            barrier = extractBufferEmpty(loc, idx);
+            barrierIdx = emptyBarrierIdx;
             barrierKind = "wait_barrier";
           } else if (kind == "producer_commit") {
-            barrier = extractBufferFull(loc, idx);
+            barrierIdx = fullBarrierIdx;
             barrierKind = "arrive_barrier";
             count = std::max(1u, bufferFullCount);
           } else if (kind == "consumer_wait") {
-            barrier = extractBufferFull(loc, idx);
+            barrierIdx = fullBarrierIdx;
             barrierKind = "wait_barrier";
           } else {
             assert(kind == "consumer_release");
-            barrier = extractBufferEmpty(loc, idx);
+            barrierIdx = emptyBarrierIdx;
             barrierKind = "arrive_barrier";
             count = std::max(1u, bufferEmptyCount);
-          }
-
-          // Add barrier to SubtiledRegionOp's barriers/accumCnts.
-          unsigned barrierIdx = op.getBarriers().size();
-          SmallVector<Value> newBarriers(op.getBarriers());
-          newBarriers.push_back(barrier);
-          op.getBarriersMutable().assign(newBarriers);
-
-          // For wait_barrier ops, we need the phase/accumCnt.
-          if (barrierKind == "wait_barrier") {
-            int phaseIdx = annotation.getPhaseIdx();
-            if (phaseIdx >= 0) {
-              Value phase = op.getTokenValues()[phaseIdx];
-              Value accumCnt = arith::ExtUIOp::create(
-                  builder, loc, builder.getI64Type(), phase);
-              SmallVector<Value> newAccumCnts(op.getAccumCnts());
-              newAccumCnts.push_back(accumCnt);
-              op.getAccumCntsMutable().assign(newAccumCnts);
-            } else {
-              Value zero = arith::ConstantOp::create(
-                  builder, loc, builder.getI64IntegerAttr(0));
-              SmallVector<Value> newAccumCnts(op.getAccumCnts());
-              newAccumCnts.push_back(zero);
-              op.getAccumCntsMutable().assign(newAccumCnts);
-            }
-          } else {
-            Value zero = arith::ConstantOp::create(
-                builder, loc, builder.getI64IntegerAttr(0));
-            SmallVector<Value> newAccumCnts(op.getAccumCnts());
-            newAccumCnts.push_back(zero);
-            op.getAccumCntsMutable().assign(newAccumCnts);
           }
 
           auto barrierAnnotation = ttng::BarrierAnnotationAttr::get(
