@@ -92,15 +92,6 @@ static void emitBarriersForRegion(
   }
 }
 
-/// Check if a tile annotation should fire for a given tile index.
-/// Empty tileMask means fire on all tiles.
-static bool isTileEnabled(BarrierAnnotationAttr annotation, unsigned tileIdx) {
-  auto mask = annotation.getTileMask();
-  if (!mask || mask.empty())
-    return true;
-  return tileIdx < static_cast<unsigned>(mask.size()) && mask[tileIdx] != 0;
-}
-
 void lowerSubtiledRegion(SubtiledRegionOp op) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
@@ -109,8 +100,8 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   ValueRange accumCnts = op.getAccumCnts();
 
   // Pre-process barrier annotations by region and target op ID.
-  llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> tileBefore,
-      tileAfter;
+  // Tile body barriers are already inline (injected by doCodePartitionPost
+  // and doTokenLowering), so only setup/teardown annotations are handled.
   llvm::DenseMap<unsigned, SmallVector<BarrierAnnotationAttr>> setupBefore,
       setupAfter, teardownBefore, teardownAfter;
 
@@ -129,11 +120,6 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
         teardownBefore[targetId].push_back(annotation);
       else
         teardownAfter[targetId].push_back(annotation);
-    } else {
-      if (annotation.getPlacement() == BarrierPlacement::BEFORE)
-        tileBefore[targetId].push_back(annotation);
-      else
-        tileAfter[targetId].push_back(annotation);
     }
   }
 
@@ -183,39 +169,12 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
       tileMapping.map(tileBlock.getArgument(numTileArgs - 1), tileIdxConst);
     }
 
+    // Barrier ops (wait_barrier, arrive_barrier) are already inline in
+    // the tile body — injected by doCodePartitionPost and converted from
+    // tokens to barriers by doTokenLowering.  Just clone everything.
     for (Operation &tileOp : tileBlock.without_terminator()) {
-      auto idAttr = tileOp.getAttrOfType<IntegerAttr>(kSubtileOpId);
-      unsigned opId = idAttr ? idAttr.getInt() : ~0u;
-
-      // BEFORE annotations.
-      if (idAttr) {
-        auto it = tileBefore.find(opId);
-        if (it != tileBefore.end()) {
-          for (auto &annotation : it->second) {
-            if (isTileEnabled(annotation, tileIdx))
-              emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
-                            tileIdx);
-          }
-        }
-      }
-
-      if (idAttr)
-        tileOp.removeAttr(kSubtileOpId);
+      tileOp.removeAttr(kSubtileOpId);
       builder.clone(tileOp, tileMapping);
-      if (idAttr)
-        tileOp.setAttr(kSubtileOpId, idAttr);
-
-      // AFTER annotations.
-      if (idAttr) {
-        auto it = tileAfter.find(opId);
-        if (it != tileAfter.end()) {
-          for (auto &annotation : it->second) {
-            if (isTileEnabled(annotation, tileIdx))
-              emitBarrierOp(builder, loc, annotation, barriers, accumCnts,
-                            tileIdx);
-          }
-        }
-      }
     }
   }
 
