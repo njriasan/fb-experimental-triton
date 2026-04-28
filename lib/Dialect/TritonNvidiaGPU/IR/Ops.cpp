@@ -1286,24 +1286,21 @@ LogicalResult SubtiledRegionOp::verify() {
              << " non-terminator ops";
   }
 
-  // 11. Task IDs in the tile body must form contiguous groups (no
-  // interleaving). A single uniform task set is the common case; contiguous
-  // groups arise when segments with different partitions are merged due to
-  // non-tensor (token) dependencies.
-  SmallVector<ArrayRef<int32_t>> seenTaskSets;
+  // 11. All ops in the tile body must have the same async_task_id set.
+  // Multi-task SubtiledRegionOps must be lowered before reaching this
+  // point (they are handled as fallbacks in doCodePartitionPost).
+  DenseI32ArrayAttr firstTaskIds;
   for (Operation &op : tileBlock.without_terminator()) {
     auto attr = op.getAttrOfType<DenseI32ArrayAttr>("async_task_id");
     if (!attr)
       continue;
-    ArrayRef<int32_t> taskIds = attr.asArrayRef();
-    if (seenTaskSets.empty() || seenTaskSets.back() != taskIds) {
-      // Check that this task set hasn't appeared before (no interleaving).
-      for (size_t i = 0; i + 1 < seenTaskSets.size(); ++i) {
-        if (seenTaskSets[i] == taskIds)
-          return emitOpError("tile body has interleaved async_task_id groups: ")
-                 << attr << " appeared non-contiguously";
-      }
-      seenTaskSets.push_back(taskIds);
+    if (!firstTaskIds) {
+      firstTaskIds = attr;
+    } else if (attr.asArrayRef() != firstTaskIds.asArrayRef()) {
+      return emitOpError("tile body has mixed async_task_id: ")
+             << attr << " vs " << firstTaskIds
+             << "; multi-task SubtiledRegionOps must be lowered before "
+                "reaching LowerSubtiledRegionPass";
     }
   }
 

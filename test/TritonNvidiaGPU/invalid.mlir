@@ -437,8 +437,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 // -----
 
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_interleaved_task_ids() {
-    // expected-error @+1 {{tile body has interleaved async_task_id groups}}
+  tt.func @subtiled_region_mixed_task_ids() {
+    // expected-error @+1 {{tile body has mixed async_task_id}}
     ttng.subtiled_region
         tile_mappings = [array<i32: 0>, array<i32: 1>]
         barrier_annotations = []
