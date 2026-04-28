@@ -136,6 +136,11 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
     // multiple producers or consumers? Check if num_warps agree.
     unsigned producerWarps = 0, consumerWarps = 0;
     SmallVector<Operation *> usersForToken;
+    // Map from block arguments (inside warp_specialize partitions) back to
+    // the original token value they correspond to.  SubtiledRegionOps inside
+    // partitions reference the block argument, not the outer token, so
+    // handleOneUser needs this mapping to match token_values entries.
+    DenseMap<Value, Value> blockArgToToken;
     for (OpOperand &use : createTokenOp.getResult().getUses()) {
       Operation *user = use.getOwner();
       if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(user)) {
@@ -145,6 +150,7 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         for (Region *region : wsOp.getPartitionRegions()) {
           LDBG("-- region " << region->getNumArguments());
           auto tArg = region->getArgument(opndNum);
+          blockArgToToken[tArg] = createTokenOp.getResult();
           for (Operation *tUser : tArg.getUsers()) {
             // Use of TokenOp via capture of warp_specialize.
             usersForToken.push_back(tUser);
@@ -278,9 +284,12 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         // that reference this token.
         Value tokenVal = createTokenOp.getResult();
         // Find which tokenValues indices reference this token.
+        // Inside warp_specialize partitions, SubtiledRegionOps reference the
+        // block argument rather than the outer token value, so check both.
         SmallVector<unsigned> tokenIndices;
         for (unsigned i = 0; i < op.getTokenValues().size(); ++i) {
-          if (op.getTokenValues()[i] == tokenVal)
+          Value tv = op.getTokenValues()[i];
+          if (tv == tokenVal || blockArgToToken.lookup(tv) == tokenVal)
             tokenIndices.push_back(i);
         }
         if (tokenIndices.empty())
@@ -307,13 +316,21 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
           Value barrier;
           StringRef barrierKind;
           unsigned count = 1;
-          if (kind == "consumer_wait") {
+          if (kind == "producer_acquire") {
+            barrier = extractBufferEmpty(loc, idx);
+            barrierKind = "wait_barrier";
+          } else if (kind == "producer_commit") {
+            barrier = extractBufferFull(loc, idx);
+            barrierKind = "arrive_barrier";
+            count = std::max(1u, bufferFullCount);
+          } else if (kind == "consumer_wait") {
             barrier = extractBufferFull(loc, idx);
             barrierKind = "wait_barrier";
           } else {
+            assert(kind == "consumer_release");
             barrier = extractBufferEmpty(loc, idx);
             barrierKind = "arrive_barrier";
-            count = bufferEmptyCount;
+            count = std::max(1u, bufferEmptyCount);
           }
 
           // Add barrier to SubtiledRegionOp's barriers/accumCnts.
@@ -322,21 +339,24 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
           newBarriers.push_back(barrier);
           op.getBarriersMutable().assign(newBarriers);
 
-          // For consumer_wait, we need the phase/accumCnt.
-          if (kind == "consumer_wait") {
+          // For wait_barrier ops, we need the phase/accumCnt.
+          if (barrierKind == "wait_barrier") {
             int phaseIdx = annotation.getPhaseIdx();
-            assert(phaseIdx >= 0);
-            Value phase = op.getTokenValues()[phaseIdx];
-            // Convert phase (i1) to accumCnt (i64) for the barrier system.
-            // phase = (accumCnt / numBuffers) & 1, so accumCnt = phase.
-            Value accumCnt = arith::ExtUIOp::create(
-                builder, loc, builder.getI64Type(), phase);
-            SmallVector<Value> newAccumCnts(op.getAccumCnts());
-            newAccumCnts.push_back(accumCnt);
-            op.getAccumCntsMutable().assign(newAccumCnts);
+            if (phaseIdx >= 0) {
+              Value phase = op.getTokenValues()[phaseIdx];
+              Value accumCnt = arith::ExtUIOp::create(
+                  builder, loc, builder.getI64Type(), phase);
+              SmallVector<Value> newAccumCnts(op.getAccumCnts());
+              newAccumCnts.push_back(accumCnt);
+              op.getAccumCntsMutable().assign(newAccumCnts);
+            } else {
+              Value zero = arith::ConstantOp::create(
+                  builder, loc, builder.getI64IntegerAttr(0));
+              SmallVector<Value> newAccumCnts(op.getAccumCnts());
+              newAccumCnts.push_back(zero);
+              op.getAccumCntsMutable().assign(newAccumCnts);
+            }
           } else {
-            // For arrive_barrier, accumCnt isn't used but we need a
-            // placeholder to keep barriers/accumCnts parallel.
             Value zero = arith::ConstantOp::create(
                 builder, loc, builder.getI64IntegerAttr(0));
             SmallVector<Value> newAccumCnts(op.getAccumCnts());
