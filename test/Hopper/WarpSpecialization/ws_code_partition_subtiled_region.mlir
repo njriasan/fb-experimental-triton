@@ -85,24 +85,29 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
       // TMA store SubtiledRegionOp (task 2): async_tma_copy
       ttng.subtiled_region
-          inputs(%smem0, %smem1, %off1, %off2 :
+          inputs(%smem0, %smem1, %off1, %off2, %desc, %off0 :
                  !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
                  !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
-                 i32, i32)
-          tile_mappings = [array<i32: 0, 2>, array<i32: 1, 3>]
+                 i32, i32,
+                 !tt.tensordesc<tensor<128x64xf16, #shared>>, i32)
+          tile_mappings = [array<i32: 0, 2, 4, 5>, array<i32: 1, 3, 4, 5>]
           barrier_annotations = []
           {async_task_id = array<i32: 2>}
         setup {
         ^bb0(%a0: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
              %a1: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
-             %a2: i32, %a3: i32):
-          ttng.subtiled_region_yield %a0, %a1, %a2, %a3 :
+             %a2: i32, %a3: i32,
+             %a4: !tt.tensordesc<tensor<128x64xf16, #shared>>, %a5: i32):
+          ttng.subtiled_region_yield %a0, %a1, %a2, %a3, %a4, %a5 :
             !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
             !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
-            i32, i32
+            i32, i32,
+            !tt.tensordesc<tensor<128x64xf16, #shared>>, i32
         } tile(%t0: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
-               %t1: i32, %tidx: i32) {
-          ttng.async_tma_copy_local_to_global %desc[%off0, %t1] %t0
+               %t1: i32,
+               %tdesc: !tt.tensordesc<tensor<128x64xf16, #shared>>,
+               %toff0: i32, %tidx: i32) {
+          ttng.async_tma_copy_local_to_global %tdesc[%toff0, %t1] %t0
             {async_task_id = array<i32: 2>}
             : !tt.tensordesc<tensor<128x64xf16, #shared>>,
               !ttg.memdesc<128x64xf16, #shared, #smem, mutable>

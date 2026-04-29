@@ -41,9 +41,6 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   bool hasTileIndex = (numTileArgs == mappingSize + 1);
 
   // 3. For each tile, clone tile region ops with substitution.
-  // Barrier ops (wait_barrier, arrive_barrier) are placed outside the
-  // SubtiledRegionOp by doTokenLowering, so the tile body just contains
-  // the compute/store ops to clone.
   for (unsigned tileIdx = 0; tileIdx < numTiles; ++tileIdx) {
     auto indices = cast<DenseI32ArrayAttr>(tileMappings[tileIdx]);
     IRMapping tileMapping;

@@ -637,8 +637,6 @@ static void buildSingleSubtiledRegionN(
         continue;
       if (alreadyMapped.contains(operand))
         continue;
-      if (!operand.getDefiningOp())
-        continue; // func arg — accessible everywhere
       if (!seenShared.insert(operand).second)
         continue;
       sharedOperands.push_back(operand);
@@ -977,6 +975,39 @@ static bool buildMultiTaskSubtiledRegionsN(
       }
     }
 
+    // Shared operands: values used by segment chain ops that are not
+    // already mapped (leaf, differing, or SMEM buffer). These need tile
+    // args so the tile body doesn't capture them (IsolatedFromAbove).
+    DenseSet<Value> chainResults;
+    for (auto *op : seg.opsPerTile[0])
+      for (Value r : op->getResults())
+        chainResults.insert(r);
+    DenseSet<Value> alreadyMapped;
+    if (ownsSetup)
+      alreadyMapped.insert(leafValues[0]);
+    for (auto &entry : resolvedDiff)
+      alreadyMapped.insert(entry.chainVals[0]);
+
+    SmallVector<Value> sharedOperands;
+    DenseSet<Value> seenShared;
+    for (auto *op : seg.opsPerTile[0]) {
+      for (Value operand : op->getOperands()) {
+        if (chainResults.contains(operand))
+          continue;
+        if (alreadyMapped.contains(operand))
+          continue;
+        if (!seenShared.insert(operand).second)
+          continue;
+        sharedOperands.push_back(operand);
+      }
+    }
+    for (Value v : sharedOperands) {
+      tileArgTypes.push_back(v.getType());
+      for (unsigned t = 0; t < numTiles; ++t)
+        tileMaps[t].push_back(yieldIdx);
+      yieldIdx += 1;
+    }
+
     SmallVector<Attribute> mapAttrs;
     for (auto &m : tileMaps)
       mapAttrs.push_back(DenseI32ArrayAttr::get(ctx, m));
@@ -991,7 +1022,7 @@ static bool buildMultiTaskSubtiledRegionsN(
     DenseSet<Operation *> setupOpSet(setupOps.begin(), setupOps.end());
     auto isOuter = [&](Value v) -> bool {
       if (auto def = v.getDefiningOp())
-        return !setupOpSet.contains(def);
+        return !ownsSetup || !setupOpSet.contains(def);
       return true; // block args are outer
     };
     auto getOrAdd = [&](Value v) -> unsigned {
@@ -1023,6 +1054,8 @@ static bool buildMultiTaskSubtiledRegionsN(
       for (unsigned t = 0; t < numTiles; ++t)
         if (isOuter(buf->smemVals[t]))
           getOrAdd(buf->smemVals[t]);
+    for (Value v : sharedOperands)
+      getOrAdd(v);
 
     auto regionOp = SubtiledRegionOp::create(
         outerBuilder, loc, TypeRange{}, outerVals, ValueRange{}, ValueRange{},
@@ -1075,6 +1108,8 @@ static bool buildMultiTaskSubtiledRegionsN(
       for (unsigned t = 0; t < numTiles; ++t)
         setupYields.push_back(resolveVal(buf->smemVals[t]));
     }
+    for (Value v : sharedOperands)
+      setupYields.push_back(resolveVal(v));
     SubtiledRegionYieldOp::create(setupBuilder, loc, setupYields);
 
     // --- Tile Region ---
@@ -1104,6 +1139,9 @@ static bool buildMultiTaskSubtiledRegionsN(
     SmallVector<Value> outSmemArgs;
     for (size_t i = 0; i < outBufs.size(); ++i)
       outSmemArgs.push_back(tileBlock->getArgument(argIdx++));
+
+    for (Value v : sharedOperands)
+      tileMapping.map(v, tileBlock->getArgument(argIdx++));
 
     // Clone from tile 0's ops (the template chain for this segment).
     for (Operation *op : seg.opsPerTile[0])

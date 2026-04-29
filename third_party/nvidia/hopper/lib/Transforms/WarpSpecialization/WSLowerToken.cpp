@@ -5,6 +5,7 @@
 #include <set>
 
 #include "mlir/IR/OperationSupport.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Analysis/Utility.h"
@@ -289,9 +290,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         deprecatedOps.push_back(user);
         return true;
       } else if (auto op = dyn_cast<ttng::SubtiledRegionOp>(user)) {
-        // Place barrier ops directly before/after the SubtiledRegionOp
-        // instead of creating barrier_annotations. This avoids the
-        // fragile targetOpIdx mechanism entirely.
         Value tokenVal = createTokenOp.getResult();
         SmallVector<unsigned> tokenIndices;
         for (unsigned i = 0; i < op.getTokenValues().size(); ++i) {
@@ -302,8 +300,20 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         if (tokenIndices.empty())
           return false;
 
+        // Build side-effect index → op map before modifying the tile body.
+        Block &tileBlock = op.getTileRegion().front();
+        DenseMap<unsigned, Operation *> idToOp;
+        unsigned sideEffectIdx = 0;
+        for (Operation &tileOp : tileBlock.without_terminator()) {
+          if (!mlir::isMemoryEffectFree(&tileOp))
+            idToOp[sideEffectIdx++] = &tileOp;
+        }
+
         SmallVector<Attribute> remainingTokenAnnotations;
 
+        // Resolve each annotation: create barrier values outside the
+        // SubtiledRegionOp, thread them into the tile body, and insert
+        // barrier ops at the target position inside the tile body.
         for (Attribute attr : op.getTokenAnnotations()) {
           auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
           bool matchesToken =
@@ -315,52 +325,51 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
 
           StringRef kind = annotation.getTokenOpKind().getValue();
           Value idx = op.getTokenValues()[annotation.getBufferIdxIdx()];
+          bool isWait = (kind == "producer_acquire" || kind == "consumer_wait");
+          bool useEmpty =
+              (kind == "producer_acquire" || kind == "consumer_release");
 
-          if (kind == "producer_acquire") {
-            // Wait on empty barrier BEFORE the SubtiledRegionOp.
-            Value barrier = extractBufferEmpty(loc, idx);
+          // Create barrier memdesc outside the SubtiledRegionOp.
+          Value barrier = useEmpty ? extractBufferEmpty(loc, idx)
+                                   : extractBufferFull(loc, idx);
+          BlockArgument tileBarrier = op.addInputToTileBody(barrier);
+
+          // For wait ops, compute the phase outside and thread it in.
+          BlockArgument tilePhase;
+          if (isWait) {
+            OpBuilder phaseBuilder(op);
             int phaseIdx = annotation.getPhaseIdx();
-            OpBuilder beforeBuilder(op);
             Value phase;
             if (phaseIdx >= 0) {
               Value phaseVal = op.getTokenValues()[phaseIdx];
               phase = arith::ExtUIOp::create(
-                  beforeBuilder, loc, beforeBuilder.getI32Type(), phaseVal);
+                  phaseBuilder, loc, phaseBuilder.getI32Type(), phaseVal);
             } else {
               phase = arith::ConstantOp::create(
-                  beforeBuilder, loc, beforeBuilder.getI32IntegerAttr(0));
+                  phaseBuilder, loc, phaseBuilder.getI32IntegerAttr(0));
             }
-            ttng::WaitBarrierOp::create(beforeBuilder, loc, barrier, phase);
-          } else if (kind == "producer_commit") {
-            // Arrive on full barrier AFTER the SubtiledRegionOp.
-            Value barrier = extractBufferFull(loc, idx);
-            OpBuilder afterBuilder(op->getContext());
-            afterBuilder.setInsertionPointAfter(op);
-            ttng::ArriveBarrierOp::create(afterBuilder, loc, barrier,
-                                          std::max(1u, bufferFullCount));
-          } else if (kind == "consumer_wait") {
-            // Wait on full barrier BEFORE the SubtiledRegionOp.
-            Value barrier = extractBufferFull(loc, idx);
-            int phaseIdx = annotation.getPhaseIdx();
-            OpBuilder beforeBuilder(op);
-            Value phase;
-            if (phaseIdx >= 0) {
-              Value phaseVal = op.getTokenValues()[phaseIdx];
-              phase = arith::ExtUIOp::create(
-                  beforeBuilder, loc, beforeBuilder.getI32Type(), phaseVal);
-            } else {
-              phase = arith::ConstantOp::create(
-                  beforeBuilder, loc, beforeBuilder.getI32IntegerAttr(0));
-            }
-            ttng::WaitBarrierOp::create(beforeBuilder, loc, barrier, phase);
+            tilePhase = op.addInputToTileBody(phase);
+          }
+
+          // Find the target op in the tile body.
+          auto it = idToOp.find(annotation.getTargetOpIdx());
+          assert(it != idToOp.end() && "targetOpIdx not found in tile body");
+          Operation *targetOp = it->second;
+
+          // Insert barrier op inside the tile body.
+          OpBuilder tileBuilder(op->getContext());
+          if (annotation.getPlacement() == ttng::BarrierPlacement::BEFORE)
+            tileBuilder.setInsertionPoint(targetOp);
+          else
+            tileBuilder.setInsertionPointAfter(targetOp);
+
+          if (isWait) {
+            ttng::WaitBarrierOp::create(tileBuilder, loc, tileBarrier,
+                                        tilePhase);
           } else {
-            assert(kind == "consumer_release");
-            // Arrive on empty barrier AFTER the SubtiledRegionOp.
-            Value barrier = extractBufferEmpty(loc, idx);
-            OpBuilder afterBuilder(op->getContext());
-            afterBuilder.setInsertionPointAfter(op);
-            ttng::ArriveBarrierOp::create(afterBuilder, loc, barrier,
-                                          std::max(1u, bufferEmptyCount));
+            unsigned count = useEmpty ? std::max(1u, bufferEmptyCount)
+                                      : std::max(1u, bufferFullCount);
+            ttng::ArriveBarrierOp::create(tileBuilder, loc, tileBarrier, count);
           }
         }
 
@@ -368,7 +377,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
             ArrayAttr::get(op.getContext(), remainingTokenAnnotations));
         if (remainingTokenAnnotations.empty())
           op.getTokenValuesMutable().assign(ValueRange{});
-        // Don't erase the SubtiledRegionOp itself.
         return true;
       } else if (auto op = dyn_cast<ttng::TMAStoreTokenWaitOp>(user)) {
         Value truePred = arith::ConstantIntOp::create(builder, loc, 1, 1);

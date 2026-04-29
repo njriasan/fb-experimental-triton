@@ -15,8 +15,8 @@
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @multi_task_setup_tmem_split_optimized
-  // After optimize_tmem_layouts, the tmem_subslice + tmem_load + convert are
-  // hoisted outside the subtiled_region and passed as inputs.
+  // After optimize_tmem_layouts, tmem_subslice/tmem_load/convert replace
+  // the split and their results are passed as inputs.
   // CHECK: ttng.tmem_subslice
   // CHECK: ttng.tmem_load
   // CHECK: ttg.convert_layout
@@ -24,8 +24,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttng.tmem_load
   // CHECK: ttg.convert_layout
   // CHECK-NOT: tt.split
-  // CHECK: ttng.subtiled_region
-  // CHECK-SAME: inputs(
+  // CHECK: ttng.subtiled_region inputs(
   // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield

@@ -1126,20 +1126,17 @@ def TTNG_PrefetchTensormapOp: TTNG_Op<
 //===----------------------------------------------------------------------===//
 
 def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
+    IsolatedFromAbove,
     RecursiveMemoryEffects,
     AttrSizedOperandSegments
 ]> {
   let summary = "Encapsulates a subtiling pattern for epilogue operations";
 
   let description = [{
-    The `ttng.subtiled_region` operation explicitly represents a subtiling
-    pattern where a large tile is split into subtiles processed sequentially.
-    This gives the compiler a structured way to reason about per-tile operations
-    and barrier placement.
-
-    The op is `IsolatedFromAbove`: all values from the enclosing scope that are
-    needed inside any region must be passed explicitly via `inputs`. The setup
-    region receives these as block arguments, in the same order as `inputs`.
+    The `ttng.subtiled_region` operation is `IsolatedFromAbove`: all values
+    from the enclosing scope that are needed inside any region must be passed
+    explicitly via `inputs`. The setup region receives these as block
+    arguments, in the same order as `inputs`.
 
     The op has three regions:
     - `setupRegion`: receives `inputs` as block arguments. Computes subtile
@@ -1181,6 +1178,13 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     SizedRegion<1>:$tileRegion,
     SizedRegion<1>:$teardownRegion
   );
+
+  let extraClassDeclaration = [{
+    /// Add `value` to inputs and thread it through setup -> tile body.
+    /// The value is yielded from setup and added to every tile's mapping.
+    /// Returns the new tile block argument.
+    BlockArgument addInputToTileBody(Value value);
+  }];
 
   let hasCustomAssemblyFormat = 1;
   let hasVerifier = 1;

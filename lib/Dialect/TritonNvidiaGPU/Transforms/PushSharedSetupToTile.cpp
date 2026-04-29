@@ -385,8 +385,12 @@ void pushSharedSetupToTile(SubtiledRegionOp op) {
     Value yieldVal = setupYield.getResults()[sa.yieldIndex];
     Operation *defOp = yieldVal.getDefiningOp();
 
-    if (!defOp || defOp->getBlock() != &setupBlock) {
-      // Defined outside setup — directly usable in tile body.
+    if (!defOp) {
+      // Block arg — pass-through of input. Can't reference input directly
+      // in tile body (IsolatedFromAbove).
+      continue;
+    }
+    if (defOp->getBlock() != &setupBlock) {
       movableArgs.push_back(sa);
       continue;
     }

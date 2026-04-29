@@ -1152,6 +1152,46 @@ void TMEMSubSliceOp::build(OpBuilder &builder, OperationState &state,
 }
 
 // -- SubtiledRegionOp --
+BlockArgument SubtiledRegionOp::addInputToTileBody(Value value) {
+  MLIRContext *ctx = getContext();
+  Block &setupBlock = getSetupRegion().front();
+  Block &tileBlock = getTileRegion().front();
+
+  // Detect tile index arg before any modifications.
+  unsigned oldMappingSize =
+      cast<DenseI32ArrayAttr>(getTileMappings()[0]).asArrayRef().size();
+  bool hasTileIndex = (tileBlock.getNumArguments() == oldMappingSize + 1);
+
+  // 1. Add to inputs.
+  getInputsMutable().append(value);
+
+  // 2. Add setup block argument.
+  BlockArgument setupArg = setupBlock.addArgument(value.getType(), getLoc());
+
+  // 3. Extend setup yield.
+  auto setupYield = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
+  SmallVector<Value> yieldVals(setupYield.getResults());
+  unsigned yieldIdx = yieldVals.size();
+  yieldVals.push_back(setupArg);
+  OpBuilder yieldBuilder(setupYield);
+  SubtiledRegionYieldOp::create(yieldBuilder, setupYield.getLoc(), yieldVals);
+  setupYield.erase();
+
+  // 4. Extend tile mappings — all tiles map to the same setup yield index.
+  SmallVector<Attribute> newMappings;
+  for (Attribute mapping : getTileMappings()) {
+    SmallVector<int32_t> indices(cast<DenseI32ArrayAttr>(mapping).asArrayRef());
+    indices.push_back(static_cast<int32_t>(yieldIdx));
+    newMappings.push_back(DenseI32ArrayAttr::get(ctx, indices));
+  }
+  setTileMappingsAttr(ArrayAttr::get(ctx, newMappings));
+
+  // 5. Add tile block argument (before tile index if present).
+  unsigned insertPos = hasTileIndex ? tileBlock.getNumArguments() - 1
+                                    : tileBlock.getNumArguments();
+  return tileBlock.insertArgument(insertPos, value.getType(), getLoc());
+}
+
 LogicalResult SubtiledRegionOp::verify() {
   // 0. Setup block arguments must match inputs (IsolatedFromAbove).
   auto &setupBlock = getSetupRegion().front();

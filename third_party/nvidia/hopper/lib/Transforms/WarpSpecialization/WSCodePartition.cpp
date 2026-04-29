@@ -50,6 +50,21 @@ static void lowerTokenAnnotations(ttng::SubtiledRegionOp op) {
   Block &tileBlock = op.getTileRegion().front();
   ValueRange tokenValues = op.getTokenValues();
 
+  // Thread all needed tokenValues through inputs -> setup -> tile body.
+  DenseMap<unsigned, BlockArgument> tokenIdxToTileArg;
+  for (Attribute attr : tokenAnnotations) {
+    auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
+    for (unsigned idx :
+         {annotation.getTokenIdx(), annotation.getBufferIdxIdx()}) {
+      if (!tokenIdxToTileArg.count(idx))
+        tokenIdxToTileArg[idx] = op.addInputToTileBody(tokenValues[idx]);
+    }
+    int phaseIdx = annotation.getPhaseIdx();
+    if (phaseIdx >= 0 && !tokenIdxToTileArg.count(phaseIdx))
+      tokenIdxToTileArg[phaseIdx] =
+          op.addInputToTileBody(tokenValues[phaseIdx]);
+  }
+
   // Build a map from side-effect-based positional index to op.
   // targetOpIdx refers to the Nth side-effecting op in the tile body.
   llvm::DenseMap<unsigned, Operation *> idToOp;
@@ -72,14 +87,14 @@ static void lowerTokenAnnotations(ttng::SubtiledRegionOp op) {
     else
       builder.setInsertionPointAfter(targetOp);
 
-    Value token = tokenValues[annotation.getTokenIdx()];
-    Value bufferIdx = tokenValues[annotation.getBufferIdxIdx()];
+    Value token = tokenIdxToTileArg[annotation.getTokenIdx()];
+    Value bufferIdx = tokenIdxToTileArg[annotation.getBufferIdxIdx()];
     StringRef kind = annotation.getTokenOpKind().getValue();
 
     if (kind == "consumer_wait") {
       int phaseIdx = annotation.getPhaseIdx();
       assert(phaseIdx >= 0);
-      Value phase = tokenValues[phaseIdx];
+      Value phase = tokenIdxToTileArg[phaseIdx];
       ttnvws::ConsumerWaitOp::create(builder, targetOp->getLoc(), token,
                                      bufferIdx, phase);
     } else {

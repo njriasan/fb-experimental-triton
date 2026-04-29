@@ -19,17 +19,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.local_alloc : () -> !ttg.memdesc<128x64xf16
   // CHECK: ttg.local_alloc : () -> !ttg.memdesc<128x64xf16
   //
-  // SubtiledRegionOp: truncf + local_store (task [3]).
-  // The async_tma_copy ops (task [4]) stay outside the SubtiledRegionOp
-  // because they use the pre-hoisted SMEM memdesc directly.
+  // Split results are passed as inputs (IsolatedFromAbove).
+  // CHECK: tt.split
   // CHECK: ttng.subtiled_region
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     ttg.local_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
-  //
-  // CHECK-NOT: tt.split
   tt.func @multi_task_with_memory_store(
       %tmem_buf: !ttg.memdesc<128x128xf32, #tmem, #ttng.tensor_memory, mutable>,
       %acc_tok: !ttg.async.token,
@@ -167,12 +164,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
   // CHECK-LABEL: @identity_insertion_addi
   // The tile body should include the arith.addi from the longer chain.
-  // The split result and differing operands must use tile block arguments.
+  // Shared operands (desc, off_row) are passed through inputs.
   // CHECK: ttng.subtiled_region
   // CHECK:   } tile{
-  // CHECK: ^bb0(%{{.*}}: tensor<{{.*}}>, %[[DIFF:.*]]: tensor<{{.*}}>, %[[VARY:.*]]: i32, %[[TIDX:.*]]: i32):
-  // CHECK:     arith.truncf %[[DIFF]]
-  // CHECK:     arith.addi %{{.*}}, %[[VARY]]
+  // CHECK:     arith.truncf
+  // CHECK:     arith.addi
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
@@ -216,14 +212,11 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100", "ttg.threads-per-warp" = 32 : i32} {
 
   // CHECK-LABEL: @identity_descriptor_store_epilogue
-  // With recursive auxiliary collection, the full bias chain
-  // (descriptor_load → extf) is pulled into the tile body. The bias tensor
-  // is no longer a tile arg — descriptor_load produces it per tile.
+  // Shared operands (descriptors, offsets) are passed through inputs.
   // CHECK: ttng.subtiled_region
   // CHECK:   } tile{
-  // CHECK: ^bb0(%{{.*}}: tensor<{{.*}}>, %[[SPLIT:.*]]: tensor<{{.*}}>, %[[VARY:.*]]: i32, %[[TIDX:.*]]: i32):
-  // CHECK:     ttg.convert_layout %[[SPLIT]]
-  // CHECK:     arith.addi %{{.*}}, %[[VARY]]
+  // CHECK:     ttg.convert_layout
+  // CHECK:     arith.addi
   // CHECK:     tt.descriptor_load
   // CHECK:     arith.extf
   // CHECK:     arith.addf
@@ -231,7 +224,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
-  // CHECK-NOT: tt.split
   tt.func @identity_descriptor_store_epilogue(
       %tmem_buf: !ttg.memdesc<128x256xf32, #tmem5, #ttng.tensor_memory, mutable>,
       %acc_tok: !ttg.async.token,

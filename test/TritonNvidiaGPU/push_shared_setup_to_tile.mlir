@@ -51,24 +51,27 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
 
   // CHECK-LABEL: @push_shared_external
-  // The shared external value should be used directly in the tile body.
+  // With IsolatedFromAbove, pass-through input args cannot be pushed,
+  // so the shared arg stays in the tile body via mappings.
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
+  // CHECK-SAME: tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
   // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
-  // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
+  // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}}, %{{.*}} : i32, i32, i32
   // CHECK:   } tile{
   // CHECK:     arith.addi %{{.*}}, %{{.*}}
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
   tt.func @push_shared_external(%ext: i32) {
     ttng.subtiled_region
+        inputs(%ext : i32)
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
         barrier_annotations = []
       setup {
+      ^bb0(%sext: i32):
         %c0 = arith.constant 0 : i32
         %c128 = arith.constant 128 : i32
-        ttng.subtiled_region_yield %c0, %c128, %ext : i32, i32, i32
+        ttng.subtiled_region_yield %c0, %c128, %sext : i32, i32, i32
       } tile(%arg0: i32, %arg1: i32) {
         %sum = arith.addi %arg0, %arg1 : i32
         ttng.subtiled_region_yield
@@ -117,27 +120,28 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
 
   // CHECK-LABEL: @push_shared_chain
-  // Both ops in the chain (constant + addi) should be pushed into tile body.
+  // The chain depends on a setup block arg, so it cannot be pushed with
+  // IsolatedFromAbove.
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
+  // CHECK-SAME: tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
   // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
-  // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
+  // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}}, %{{.*}} : i32, i32, i32
   // CHECK:   } tile{
-  // CHECK:     arith.constant 10
-  // CHECK:     arith.addi
   // CHECK:     arith.muli
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
   tt.func @push_shared_chain(%ext: i32) {
     ttng.subtiled_region
+        inputs(%ext : i32)
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
         barrier_annotations = []
       setup {
+      ^bb0(%sext: i32):
         %c0 = arith.constant 0 : i32
         %c128 = arith.constant 128 : i32
         %c10 = arith.constant 10 : i32
-        %shared = arith.addi %c10, %ext : i32
+        %shared = arith.addi %c10, %sext : i32
         ttng.subtiled_region_yield %c0, %c128, %shared : i32, i32, i32
       } tile(%arg0: i32, %arg1: i32) {
         %prod = arith.muli %arg0, %arg1 : i32
@@ -223,13 +227,15 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %tmem_buf: !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable>,
       %acc_tok: !ttg.async.token) {
     ttng.subtiled_region
+        inputs(%tmem_buf : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable>)
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 3>]
         barrier_annotations = []
       setup {
-        %s0 = ttng.tmem_subslice %tmem_buf {N = 0 : i32} : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable> -> !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128>
+      ^bb0(%stmem: !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable>):
+        %s0 = ttng.tmem_subslice %stmem {N = 0 : i32} : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable> -> !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128>
         %l0 = ttng.tmem_load %s0 : !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128> -> tensor<128x64xf32, #linear6>
         %cvt0 = ttg.convert_layout %l0 : tensor<128x64xf32, #linear6> -> tensor<128x64xf32, #blocked6>
-        %s1 = ttng.tmem_subslice %tmem_buf {N = 64 : i32} : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable> -> !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128>
+        %s1 = ttng.tmem_subslice %stmem {N = 64 : i32} : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable> -> !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128>
         %l1 = ttng.tmem_load %s1 : !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128> -> tensor<128x64xf32, #linear6>
         %cvt1 = ttg.convert_layout %l1 : tensor<128x64xf32, #linear6> -> tensor<128x64xf32, #blocked6>
         %c0 = arith.constant 0 : i32
