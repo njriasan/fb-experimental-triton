@@ -1476,6 +1476,67 @@ LogicalResult TensormapCreateOp::verify() {
   return success();
 }
 
+// -- WSWaitBarrierOp --
+LogicalResult WSWaitBarrierOp::verify() {
+  auto subtiled = (*this)->getParentOfType<SubtiledRegionOp>();
+  if (!subtiled)
+    return emitOpError("must be inside a SubtiledRegionOp");
+
+  if ((*this)->getParentRegion() != &subtiled.getTileRegion())
+    return emitOpError("must be inside the tile region of a SubtiledRegionOp");
+
+  unsigned barrierIdx = getBarrierIdx();
+  if (barrierIdx >= subtiled.getBarriers().size())
+    return emitOpError("barrierIdx ")
+           << barrierIdx << " is out of range; enclosing SubtiledRegionOp has "
+           << subtiled.getBarriers().size() << " barriers";
+
+  if (barrierIdx >= subtiled.getAccumCnts().size())
+    return emitOpError("barrierIdx ")
+           << barrierIdx
+           << " has no corresponding accumCnt; enclosing SubtiledRegionOp has "
+           << subtiled.getAccumCnts().size() << " accumCnts";
+
+  if (auto mask = getLoweringMask()) {
+    unsigned numTiles = subtiled.getTileMappings().size();
+    if (mask->size() != numTiles)
+      return emitOpError("loweringMask has ")
+             << mask->size() << " entries but there are " << numTiles
+             << " tiles";
+  }
+
+  return success();
+}
+
+// -- WSArriveBarrierOp --
+LogicalResult WSArriveBarrierOp::verify() {
+  auto subtiled = (*this)->getParentOfType<SubtiledRegionOp>();
+  if (!subtiled)
+    return emitOpError("must be inside a SubtiledRegionOp");
+
+  if ((*this)->getParentRegion() != &subtiled.getTileRegion())
+    return emitOpError("must be inside the tile region of a SubtiledRegionOp");
+
+  unsigned barrierIdx = getBarrierIdx();
+  if (barrierIdx >= subtiled.getBarriers().size())
+    return emitOpError("barrierIdx ")
+           << barrierIdx << " is out of range; enclosing SubtiledRegionOp has "
+           << subtiled.getBarriers().size() << " barriers";
+
+  if (getCount() < 1)
+    return emitOpError("count must be at least 1");
+
+  if (auto mask = getLoweringMask()) {
+    unsigned numTiles = subtiled.getTileMappings().size();
+    if (mask->size() != numTiles)
+      return emitOpError("loweringMask has ")
+             << mask->size() << " entries but there are " << numTiles
+             << " tiles";
+  }
+
+  return success();
+}
+
 } // namespace nvidia_gpu
 } // namespace triton
 } // namespace mlir
