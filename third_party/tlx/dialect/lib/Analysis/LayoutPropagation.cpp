@@ -88,7 +88,7 @@ void LayoutBackwardPropagation::visitWarpSpecRegionArgs(
             op->getParentOfType<ttg::WarpSpecializePartitionsOp>()) {
       auto warpSpecializeOp = warpSpecializePartitionsOp.getParentOp();
       auto blockArgumentLattice = getLatticeElement(
-          warpSpecializeOp.getExplicitCaptures()[arg.getArgNumber()]);
+          warpSpecializePartitionsOp.getExplicitCaptures()[arg.getArgNumber()]);
       ChangeResult changed = blockArgumentLattice->meet(resultEncoding);
       propagateIfChanged(blockArgumentLattice, changed);
       // Propagate to all the partition regions
@@ -205,7 +205,8 @@ LogicalResult LayoutBackwardPropagation::visitOperation(
       auto ctx = srcType.getContext();
 
       // Build unswizzled NVMMASharedEncodingAttr with default CTA layout
-      auto ctaLayout = ttg::CGAEncodingAttr::get1CTALayout(ctx, srcType.getRank());
+      auto ctaLayout =
+          ttg::CGAEncodingAttr::get1CTALayout(ctx, srcType.getRank());
       auto unswizzledEncoding = ttg::NVMMASharedEncodingAttr::get(
           ctx,
           /*swizzlingByteWidth=*/0,

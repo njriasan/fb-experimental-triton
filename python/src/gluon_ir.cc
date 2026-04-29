@@ -264,7 +264,7 @@ py::object layoutToGluon(Attribute layout) {
     return layouts.AMDWMMALayout(
         amdWmma.getVersion(), amdWmma.getIsTransposed(),
         ctaLayout.getBases().lookup(kWarp), ctaLayout.getBases().lookup(kReg),
-        toStdVector(amdWmma.getInstrShape()), cgaBases);
+        toStdVector(amdWmma.getInstrShape()), cgaBases, amdWmma.getRank());
   } else if (auto paddedShared =
                  dyn_cast<ttg::PaddedSharedEncodingAttr>(layout)) {
     auto *ctx = paddedShared.getContext();
@@ -547,6 +547,11 @@ void init_gluon_ir(py::module &&m) {
              return self.getChecked<ttng::TensorMemoryScalesEncodingAttr>(
                  ctx, ctaSplitNum[0], ctaSplitNum[1]);
            })
+      .def("get_shape_from_tensor",
+           [](GluonOpBuilder &self, Value tensor) -> std::vector<int64_t> {
+             auto ty = dyn_cast<RankedTensorType>(tensor.getType());
+             return ty.getShape();
+           })
       .def("get_gluon_layout_from_tensor",
            [](GluonOpBuilder &self, Value tensor) -> py::object {
              auto ty = dyn_cast<RankedTensorType>(tensor.getType());
@@ -646,6 +651,24 @@ void init_gluon_ir(py::module &&m) {
       .def("create_local_load",
            [](GluonOpBuilder &self, Type resultTy, Value memDesc) -> Value {
              return self.create<ttg::LocalLoadOp>(resultTy, memDesc);
+           })
+      .def("create_local_gather",
+           [](GluonOpBuilder &self, Type resultTy, Value memDesc, Value indices,
+              int32_t axis) -> Value {
+             auto ctx = self.getContext();
+             auto i32Ty = IntegerType::get(ctx, 32);
+             auto axisAttr = IntegerAttr::get(i32Ty, axis);
+             return self.create<ttg::LocalGatherOp>(resultTy, memDesc, indices,
+                                                    axisAttr);
+           })
+      .def("create_local_scatter",
+           [](GluonOpBuilder &self, Value memDesc, Value values, Value indices,
+              int32_t axis) {
+             auto ctx = self.getContext();
+             auto i32Ty = IntegerType::get(ctx, 32);
+             auto axisAttr = IntegerAttr::get(i32Ty, axis);
+             self.create<ttg::LocalScatterOp>(memDesc, values, indices,
+                                              axisAttr);
            })
       .def("create_local_gather",
            [](GluonOpBuilder &self, Type resultTy, Value memDesc, Value indices,
@@ -874,15 +897,16 @@ void init_gluon_ir(py::module &&m) {
              return self.create<ttg::WarpYieldOp>(values);
            })
       .def("create_warp_specialize_partitions",
-           [](GluonOpBuilder &self, int numPartitions) -> Operation * {
-             return self.create<ttg::WarpSpecializePartitionsOp>(numPartitions);
+           [](GluonOpBuilder &self, std::vector<Value> &explicitCaptures,
+              int numPartitions) -> Operation * {
+             return self.create<ttg::WarpSpecializePartitionsOp>(
+                 explicitCaptures, numPartitions);
            })
       .def("create_warp_specialize",
            [](GluonOpBuilder &self, std::vector<Type> &resultTypes,
-              std::vector<Value> &explicitCaptures,
               std::vector<int> &partitionNumWarps) {
-             return self.create<ttg::WarpSpecializeOp>(
-                 resultTypes, explicitCaptures, partitionNumWarps);
+             return self.create<ttg::WarpSpecializeOp>(resultTypes,
+                                                       partitionNumWarps);
            })
       .def("create_buffer_load",
            [](GluonOpBuilder &self, Type resultType, Value ptr, Value offsets,
@@ -931,6 +955,14 @@ void init_gluon_ir(py::module &&m) {
               Value src, Value barrier) {
              self.create<ttag::AsyncTDMCopyLocalToGlobalOp>(descPtr, indices,
                                                             src, barrier);
+           })
+      .def("create_tdm_prefetch",
+           [](GluonOpBuilder &self, Value descPtr, std::vector<Value> &indices,
+              Value pred, bool speculative, bool returnOffsets) -> Value {
+             auto op = self.create<ttag::TDMPrefetchOp>(
+                 descPtr, indices, pred, speculative,
+                 returnOffsets ? UnitAttr::get(self.getContext()) : nullptr);
+             return returnOffsets ? op->getResult(0) : nullptr;
            })
       .def("create_async_tdm_wait",
            [](GluonOpBuilder &self, int num) {

@@ -101,6 +101,7 @@ public:
         return WalkResult::advance();
 
       if (auto wsOp = dyn_cast<ttg::WarpSpecializeOp>(op)) {
+        auto partitionsOp = wsOp.getPartitionOp();
         Region *firstRegion = wsOp.getPartitionRegions()[0];
         for (auto [i, blockArg] :
              llvm::enumerate(firstRegion->getArguments())) {
@@ -118,6 +119,13 @@ public:
                   origType, lattice->getValue().getLayoutEncoding());
               partitionRegion->getArgument(i).setType(newType);
             }
+          }
+          // Also update the capture value's type on the partitions op.
+          if (auto origType =
+                  dyn_cast<ttg::MemDescType>(blockArg.getType())) {
+            auto newType = getNewMemDescType(
+                origType, lattice->getValue().getLayoutEncoding());
+            partitionsOp.getExplicitCaptures()[i].setType(newType);
           }
         }
         return WalkResult::advance();
@@ -137,31 +145,6 @@ public:
           op->getResult(i).setType(newType);
         }
       }
-      return WalkResult::advance();
-    });
-
-    // Fix up RequireLayoutOps feeding into TMEMStoreOps with scales encoding.
-    // ResolvePlaceholderLayouts assigned a generic TMEM-compatible register
-    // layout, but for scales the register layout must use a scales-compatible
-    // layout from getScaleTMEMStoreLinearLayout.
-    funcOp.walk([&](ttng::TMEMStoreOp storeOp) {
-      auto memTy = storeOp.getDst().getType();
-      if (!isa<ttng::TensorMemoryScalesEncodingAttr>(memTy.getEncoding()))
-        return WalkResult::advance();
-
-      auto requireOp = storeOp.getSrc().getDefiningOp<RequireLayoutOp>();
-      if (!requireOp)
-        return WalkResult::advance();
-
-      auto srcTy = cast<RankedTensorType>(requireOp.getResult().getType());
-      auto compatibleLayouts =
-          ttng::getTmemCompatibleLayouts(storeOp, srcTy, memTy);
-      assert(!compatibleLayouts.empty() &&
-             "No TMEM-compatible layout found for scales");
-      auto newEncoding = compatibleLayouts.front();
-      auto newType = RankedTensorType::get(srcTy.getShape(),
-                                           srcTy.getElementType(), newEncoding);
-      requireOp->getResult(0).setType(newType);
       return WalkResult::advance();
     });
 

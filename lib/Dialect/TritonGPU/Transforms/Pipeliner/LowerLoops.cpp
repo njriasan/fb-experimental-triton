@@ -241,15 +241,15 @@ void createTMAAsyncLoad(scf::ForOp forOp, tt::DescriptorLoadOp loadOp,
                         Value alloc, Value insertIdx, Value extractIdx,
                         Value barrier, Operation *waitOp,
                         CoarseSchedule &schedule) {
-  return createTMAAsyncCopy(
-      forOp, loadOp, loadOp.getDesc(), alloc, insertIdx, extractIdx, barrier,
-      waitOp, schedule,
-      [&](OpBuilderForStage &builder, Value desc, Value barrier, Value view,
-          Value pred) {
-        ttng::AsyncTMACopyGlobalToLocalOp::create(
-            builder, loadOp.getLoc(), /*multicastTargets*/ Value(), desc,
-            loadOp.getIndices(), barrier, view, pred);
-      });
+  return createTMAAsyncCopy(forOp, loadOp, loadOp.getDesc(), alloc, insertIdx,
+                            extractIdx, barrier, waitOp, schedule,
+                            [&](OpBuilderForStage &builder, Value desc,
+                                Value barrier, Value view, Value pred) {
+                              ttng::AsyncTMACopyGlobalToLocalOp::create(
+                                  builder, loadOp.getLoc(),
+                                  /*multicastTargets*/ Value(), desc,
+                                  loadOp.getIndices(), barrier, view, pred);
+                            });
 }
 
 void createTMAAsyncGather(scf::ForOp forOp, tt::DescriptorGatherOp gatherOp,
@@ -644,10 +644,10 @@ scf::ForOp lowerLoads(scf::ForOp forOp, CoarseSchedule &schedule,
 /////////////////////////////
 
 std::pair<Operation *, Operation *>
-getTmemUseStageBoundOps(ttng::TMEMAllocOp alloc, scf::ForOp forOp,
+getTmemUseStageBoundOps(Value alloc, scf::ForOp forOp,
                         CoarseSchedule &schedule) {
   std::pair<Operation *, Operation *> bounds = {nullptr, nullptr};
-  for (auto user : alloc->getUsers()) {
+  for (auto user : alloc.getUsers()) {
     if (!forOp->isAncestor(user->getParentOp())) {
       continue;
     }
@@ -965,10 +965,7 @@ scf::ForOp lowerMMA(ttng::MMAv5OpInterface mma, scf::ForOp forOp,
   auto isLoadToBePipelined = [&](Operation *op) {
     return schedule[mma].first > schedule[op].first;
   };
-  auto alloc = mma.getAccumulator().getDefiningOp<ttng::TMEMAllocOp>();
-  if (!alloc) {
-    return forOp;
-  }
+  Value alloc = mma.getAccumulator();
 
   int mmaSelfLatency = getSelfLatencyFromAttr(mma.getOperation());
   if (mmaSelfLatency == 0) {
@@ -990,6 +987,11 @@ scf::ForOp lowerMMA(ttng::MMAv5OpInterface mma, scf::ForOp forOp,
            tmemUseStageBoundOps.second))) {
     tmemUseNumStages += 1;
   }
+
+  // If the accumulator needs to be double-buffered but we can't find the alloc
+  // op, then bail out.
+  if (tmemUseNumStages > 1 && !alloc.getDefiningOp<ttng::TMEMAllocOp>())
+    return forOp;
 
   OpBuilder builder(forOp);
   Value minusOne =
@@ -1029,8 +1031,9 @@ scf::ForOp lowerMMA(ttng::MMAv5OpInterface mma, scf::ForOp forOp,
                           phaseArgIdx, barrierIdxArgIdx);
 
   if (tmemUseNumStages > 1) {
-    multibufferTensorMemory(forOp, schedule, alloc, bufIdxArgIdx,
-                            tmemUseNumStages);
+    multibufferTensorMemory(forOp, schedule,
+                            alloc.getDefiningOp<ttng::TMEMAllocOp>(),
+                            bufIdxArgIdx, tmemUseNumStages);
   }
 
   return forOp;

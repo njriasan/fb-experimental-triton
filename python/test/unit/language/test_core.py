@@ -3252,8 +3252,7 @@ def test_reduction_ordering_sum_multi_group(num_warps, device):
     BLOCK_N = 1024
 
     @triton.jit
-    def sum_kernel_1row(X, Z, stride_row, stride_col,
-                        BLOCK_N: tl.constexpr, ORDERING: tl.constexpr):
+    def sum_kernel_1row(X, Z, stride_row, stride_col, BLOCK_N: tl.constexpr, ORDERING: tl.constexpr):
         pid = tl.program_id(0)
         offs_n = tl.arange(0, BLOCK_N)
         x = tl.load(X + pid * stride_row + offs_n * stride_col)
@@ -3262,23 +3261,18 @@ def test_reduction_ordering_sum_multi_group(num_warps, device):
 
     torch.manual_seed(42)
     x = torch.randn((TOTAL_ROWS, BLOCK_N), device=device, dtype=torch.float32)
-    grid = (TOTAL_ROWS,)
+    grid = (TOTAL_ROWS, )
 
     # Reference: num_warps=1 (K=1, no multi-group path)
     ref = torch.empty(TOTAL_ROWS, device=device, dtype=torch.float32)
-    sum_kernel_1row[grid](x, ref, x.stride(0), x.stride(1),
-                          BLOCK_N=BLOCK_N,
-                          ORDERING=tl.ReductionOrdering.INNER_TREE,
+    sum_kernel_1row[grid](x, ref, x.stride(0), x.stride(1), BLOCK_N=BLOCK_N, ORDERING=tl.ReductionOrdering.INNER_TREE,
                           num_warps=1)
 
     out = torch.empty(TOTAL_ROWS, device=device, dtype=torch.float32)
-    sum_kernel_1row[grid](x, out, x.stride(0), x.stride(1),
-                          BLOCK_N=BLOCK_N,
-                          ORDERING=tl.ReductionOrdering.INNER_TREE,
+    sum_kernel_1row[grid](x, out, x.stride(0), x.stride(1), BLOCK_N=BLOCK_N, ORDERING=tl.ReductionOrdering.INNER_TREE,
                           num_warps=num_warps)
-    assert torch.equal(out, ref), (
-        f"INNER_TREE sum K>1 not bitwise equal to K=1 reference: "
-        f"num_warps={num_warps}")
+    assert torch.equal(out, ref), (f"INNER_TREE sum K>1 not bitwise equal to K=1 reference: "
+                                   f"num_warps={num_warps}")
 
 
 # ---------------
@@ -3852,7 +3846,7 @@ def test_dot(
     if is_hip_cdna() or is_hip_gfx1250():
         amdgcn = pgm.asm['amdgcn']
 
-        if (M, N) == (4, 64) or (M, N) == (64, 4):
+        if is_hip_cdna() and ((M, N) == (4, 64) or (M, N) == (64, 4)):
             assert "v_mfma_f32_4x4" in amdgcn
         elif (M, N) == (4, 32):
             if in_dtype == 'float16':
@@ -6019,6 +6013,15 @@ def test_constexpr_assignment(literal, tensor_ty):
     kernel_patched[(1, )](literal, tensor_ty)
 
 
+def test_constexpr_arg_str_attr():
+
+    @triton.jit
+    def cst_str_attr(c_s_arg: tl.constexpr):
+        pass
+
+    cst_str_attr.warmup('SD', grid=(1, ))
+
+
 @triton.jit
 def return_poison(x):
     a = False
@@ -7346,3 +7349,31 @@ def test_dot_multidim(rank, trans_a, trans_b, device):
     d = a.to(torch.float32) @ b.to(torch.float32)
 
     assert torch.allclose(c, d, rtol=1e-3, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype_str", ["float32", "float64"])
+def test_libdevice_rint(dtype_str, device):
+    iinfo32 = np.iinfo(np.int32)
+    iinfo64 = np.iinfo(np.int64)
+    size = 1000
+    x0_np = np.random.uniform(iinfo32.min, iinfo32.max + 1, size)
+    x1_np = np.random.uniform(iinfo64.min, iinfo64.max + 1, size)
+    x2_np = np.array([-2.5, -1.5, -0.5, -0., 0., 0.5, 1.5, 2.5, float("inf"), -float("inf"), float("nan")])
+    x_np = np.concat((x0_np, x1_np, x2_np))
+    x_tri = to_triton(x_np, device=device, dst_type=dtype_str)
+
+    @triton.jit
+    def rint_kernel(outp, inp, n, BLOCK_SIZE: tl.constexpr):
+        pid = tl.program_id(0)
+        offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offset < n
+        inp_tile = tl.load(inp + offset, mask=mask)
+        outp_tile = tl.extra.libdevice.rint(inp_tile)
+        tl.store(outp + offset, outp_tile, mask=mask)
+
+    res_out = torch.empty_like(x_tri)
+    numel = x_tri.numel()
+    BLOCK_SIZE = 512
+    rint_kernel[(triton.cdiv(numel, BLOCK_SIZE), )](res_out, x_tri, numel, BLOCK_SIZE)
+    ref_out = np.rint(x_np)
+    np.testing.assert_allclose(to_numpy(res_out), ref_out, rtol=0, atol=0, equal_nan=True)

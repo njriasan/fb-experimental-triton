@@ -622,11 +622,15 @@ def TTG_GlobalScratchAllocOp : TTG_Op<"global_scratch_alloc"> {
   let summary = "allocate a global memory buffer";
   let description = [{
     This operation allocates a buffer in global memory that is private to the current program.
+    The `backend` attribute specifies the backend to use for allocation.
+    The `default` backend is used by TritonGPU passes.
+    Downstream Triton tools and compilers can register a different backend and use a different allocation policy.
   }];
   let arguments = (
     ins
     I32Attr:$nbytes,
-    I32Attr:$alignment
+    I32Attr:$alignment,
+    DefaultValuedAttr<StrAttr, "\"default\"">:$backend
   );
   let results = (outs Arg<TT_Ptr, "", [MemAlloc<GlobalMemory>]>:$result);
 
@@ -672,13 +676,10 @@ def TTG_WarpSpecializeOp : TTG_Op<"warp_specialize", [
     ```
   }];
 
-  let arguments = (ins
-    Variadic<AnyType>:$explicitCaptures,
-    DenseI32ArrayAttr:$partitionNumWarps,
-    OptionalAttr<DenseI32ArrayAttr>:$warpGroupStartIds,
-    OptionalAttr<DenseI32ArrayAttr>:$requestedRegisters,
-    OptionalAttr<DenseI32ArrayAttr>:$actualRegisters
-  );
+  let arguments = (ins DenseI32ArrayAttr:$partitionNumWarps,
+      OptionalAttr<DenseI32ArrayAttr>:$warpGroupStartIds,
+      OptionalAttr<DenseI32ArrayAttr>:$requestedRegisters,
+      OptionalAttr<DenseI32ArrayAttr>:$actualRegisters);
   let results = (outs Variadic<AnyType>:$defaultPassthrough);
 
   let regions = (region
@@ -688,6 +689,7 @@ def TTG_WarpSpecializeOp : TTG_Op<"warp_specialize", [
 
   let extraClassDeclaration = [{
     RegionRange getPartitionRegions();
+    WarpSpecializePartitionsOp getPartitionOp();
 
     // Get the size and alignment of the capture list.
     std::pair<uint64_t, uint64_t> getCaptureSizeAlign();
@@ -695,12 +697,11 @@ def TTG_WarpSpecializeOp : TTG_Op<"warp_specialize", [
     unsigned getTotalPartitionWarps();
   }];
 
-  let builders = [
-    OpBuilder<(ins "TypeRange":$resultTypes,
-                   "ArrayRef<int32_t>":$partitionNumWarps,
-                   "unsigned":$numPartitionRegions)>,
-    OpBuilder<(ins "TypeRange":$resultTypes, "ValueRange":$explicitCaptures,
-                   "ArrayRef<int32_t>":$partitionNumWarps)>,
+  let builders = [OpBuilder<(ins "TypeRange":$resultTypes,
+                      "ArrayRef<int32_t>":$partitionNumWarps,
+                      "unsigned":$numPartitionRegions)>,
+                  OpBuilder<(ins "TypeRange":$resultTypes,
+                      "ArrayRef<int32_t>":$partitionNumWarps)>,
   ];
 
   let hasVerifier = 1;
@@ -721,7 +722,11 @@ def TTG_WarpSpecializePartitionsOp
     contains the actual isolated from above regions of `ttg.warp_specialize`.
   }];
 
+  let arguments = (ins Variadic<AnyType>:$explicitCaptures);
   let regions = (region VariadicRegion<MinSizedRegion<1>>:$partitionRegions);
+
+  let hasVerifier = 1;
+  let hasCanonicalizeMethod = 1;
 }
 
 def TTG_WarpYieldOp : TTG_Op<"warp_yield", [

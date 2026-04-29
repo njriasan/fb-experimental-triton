@@ -4,7 +4,6 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 #include "nvidia/hopper/include/Transforms/Passes.h"
-#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/Transforms/Partition.h"
@@ -30,18 +29,15 @@ static OpPrintingFlags getOpPrintingFlagsWithLoc() {
   return flags;
 }
 
-void doTaskPartition(triton::FuncOp &funcOp, unsigned numWarpGroups);
 int doTaskIdPropagate(triton::FuncOp &funcOp);
 LogicalResult doMemoryPlanner(triton::FuncOp &funcOp, unsigned numBuffers,
                               StringRef readDecisionFile = "",
                               StringRef writeDecisionFile = "",
                               int smemAllocAlgo = 0, unsigned smemBudget = 0,
                               bool smemCircularReuse = false);
-bool doDataPartition(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 void doBufferAllocation(triton::FuncOp &funcOp);
 void doHoistLoopInvariantTMEMStore(triton::FuncOp &funcOp);
 void removeRedundantTmemZeroStores(triton::FuncOp &funcOp);
-void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers);
 void doCodePartitionPost(triton::FuncOp &funcOp, unsigned numBuffers);
 void doTokenLowering(triton::FuncOp &funcOp, unsigned numConsumerGroups);
 void doPingPongPrep(triton::FuncOp &funcOp, unsigned numWarpGroups,
@@ -73,12 +69,24 @@ public:
   using impl::NVGPUWarpSpecializationBase<
       NVGPUWarpSpecializationPass>::NVGPUWarpSpecializationBase;
 
-  // Remove the warp_specialize attribute from all loops in the function so
-  // downstream passes (pipelining, latency assignment) don't mistakenly
-  // treat the loop as warp-specialized.
+  // Remove the warp_specialize attribute from all loops in the function, plus
+  // any partition metadata that the earlier `tritongpu-partition-scheduling`
+  // pass may have written. The two passes form a pair: when this pass takes
+  // an early-exit and skips warp specialization (e.g. else-block fallback),
+  // leaving `ttg.partition` / `ttg.partition.stages` / `ttg.warp_specialize.tag`
+  // behind on ops + loops produces a half-tagged state — the downstream
+  // `tritongpu-pipeline` pass treats partition-tagged regions as WS regions
+  // and crashes when sibling ops in an scf.if/else aren't tagged. Stripping
+  // everything ensures downstream sees a plain (non-WS) loop.
   void removeWarpSpecializeAttr(triton::FuncOp funcOp) {
     funcOp->walk([&](scf::ForOp forOp) {
       forOp->removeAttr(mlir::triton::kWarpSpecializeAttrName);
+      forOp->removeAttr(mlir::triton::gpu::kPartitionStagesAttrName);
+      forOp->removeAttr(mlir::triton::gpu::kWarpSpecializeTagAttrName);
+    });
+    funcOp->walk([&](Operation *op) {
+      op->removeAttr(mlir::triton::gpu::kPartitionAttrName);
+      op->removeAttr(mlir::triton::gpu::kPartitionOutputsAttrName);
     });
   }
 
@@ -135,8 +143,10 @@ public:
     unsigned numWarpGroups = ForBlackWell ? 2 : 3;
 
     int retCode = doTaskIdPropagate(funcOp);
-    if (retCode == -1)
+    if (retCode == -1) {
       signalPassFailure();
+      return;
+    }
     if (dumpIntermediateSteps) {
       llvm::dbgs() << "// -----// WarpSpec internal IR Dump After: "
                       "doTaskIdPropagate\n";

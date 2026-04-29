@@ -3157,67 +3157,67 @@ void insertAsyncComm(
           // order of the template ops.
           bool hasSubtiledSrc = llvm::any_of(ordered, [](Channel *ch) {
             return ch->getSrcOp() &&
-                   ch->getSrcOp()
-                       ->getParentOfType<ttng::SubtiledRegionOp>() != nullptr;
+                   ch->getSrcOp()->getParentOfType<ttng::SubtiledRegionOp>() !=
+                       nullptr;
           });
           bool hasSubtiledDst = llvm::any_of(ordered, [](Channel *ch) {
             return ch->getDstOp() &&
-                   ch->getDstOp()
-                       ->getParentOfType<ttng::SubtiledRegionOp>() != nullptr;
+                   ch->getDstOp()->getParentOfType<ttng::SubtiledRegionOp>() !=
+                       nullptr;
           });
           if (!hasSubtiledSrc && !hasSubtiledDst) {
-          for (size_t i = 1; i < ordered.size(); i++) {
-            auto *prevConsumer = ordered[i - 1]->getDstOp();
-            auto *curConsumer = ordered[i]->getDstOp();
-            if (prevConsumer->getBlock() == curConsumer->getBlock() &&
-                !appearsBefore(prevConsumer, curConsumer)) {
-              llvm::report_fatal_error(
-                  "N-buffer reuse group: producer and consumer orderings are "
-                  "inconsistent. Producer order has channel " +
-                  Twine(ordered[i - 1]->uniqID) + " before channel " +
-                  Twine(ordered[i]->uniqID) +
-                  ", but consumer order is reversed. This would cause a "
-                  "deadlock in the intra-iteration reuse dependency chain.");
-            }
-          }
-          // Find masterChannel's position in the ordered list.
-          for (size_t i = 1; i < ordered.size(); i++) {
-            if (ordered[i] == masterChannel) {
-              auto *earlyChannel = ordered[i - 1];
-              if (needExplicitReuseWait(earlyChannel, masterChannel)) {
-                auto *earlyProducer = earlyChannel->getSrcOp();
-                if (earlyProducer->getBlock() == headProducer->getBlock() &&
-                    appearsBefore(earlyProducer, headProducer)) {
-                  auto *lateConsumer = masterChannel->getDstOp();
-                  if (lateConsumer->getBlock() == earlyProducer->getBlock()) {
-                    producerAcquireForChannelLoop = earlyProducer;
-                  }
-                }
-                earlyChannelForReuseSync = earlyChannel;
-                LLVM_DEBUG({
-                  LDBG("N-reuse group: channel "
-                       << masterChannel->uniqID
-                       << " will wait on early channel "
-                       << earlyChannel->uniqID);
-                });
+            for (size_t i = 1; i < ordered.size(); i++) {
+              auto *prevConsumer = ordered[i - 1]->getDstOp();
+              auto *curConsumer = ordered[i]->getDstOp();
+              if (prevConsumer->getBlock() == curConsumer->getBlock() &&
+                  !appearsBefore(prevConsumer, curConsumer)) {
+                llvm::report_fatal_error(
+                    "N-buffer reuse group: producer and consumer orderings are "
+                    "inconsistent. Producer order has channel " +
+                    Twine(ordered[i - 1]->uniqID) + " before channel " +
+                    Twine(ordered[i]->uniqID) +
+                    ", but consumer order is reversed. This would cause a "
+                    "deadlock in the intra-iteration reuse dependency chain.");
               }
-              break;
             }
-          }
-          // Wrap-around dependency: the first channel in program order
-          // must wait for the last channel's consumer from the previous
-          // iteration. Without this, the first channel's producer can
-          // overwrite the shared SMEM buffer while the last channel's
-          // TMA is still reading from the previous iteration.
-          if (ordered[0] == masterChannel) {
-            wrapAroundChannelForReuseSync = ordered.back();
-            LLVM_DEBUG({
-              LDBG("N-reuse group: channel "
-                   << masterChannel->uniqID
-                   << " will wrap-around wait on last channel "
-                   << wrapAroundChannelForReuseSync->uniqID);
-            });
-          }
+            // Find masterChannel's position in the ordered list.
+            for (size_t i = 1; i < ordered.size(); i++) {
+              if (ordered[i] == masterChannel) {
+                auto *earlyChannel = ordered[i - 1];
+                if (needExplicitReuseWait(earlyChannel, masterChannel)) {
+                  auto *earlyProducer = earlyChannel->getSrcOp();
+                  if (earlyProducer->getBlock() == headProducer->getBlock() &&
+                      appearsBefore(earlyProducer, headProducer)) {
+                    auto *lateConsumer = masterChannel->getDstOp();
+                    if (lateConsumer->getBlock() == earlyProducer->getBlock()) {
+                      producerAcquireForChannelLoop = earlyProducer;
+                    }
+                  }
+                  earlyChannelForReuseSync = earlyChannel;
+                  LLVM_DEBUG({
+                    LDBG("N-reuse group: channel "
+                         << masterChannel->uniqID
+                         << " will wait on early channel "
+                         << earlyChannel->uniqID);
+                  });
+                }
+                break;
+              }
+            }
+            // Wrap-around dependency: the first channel in program order
+            // must wait for the last channel's consumer from the previous
+            // iteration. Without this, the first channel's producer can
+            // overwrite the shared SMEM buffer while the last channel's
+            // TMA is still reading from the previous iteration.
+            if (ordered[0] == masterChannel) {
+              wrapAroundChannelForReuseSync = ordered.back();
+              LLVM_DEBUG({
+                LDBG("N-reuse group: channel "
+                     << masterChannel->uniqID
+                     << " will wrap-around wait on last channel "
+                     << wrapAroundChannelForReuseSync->uniqID);
+              });
+            }
           } // end if (!hasSubtiledSrc && !hasSubtiledDst)
         }
       }
@@ -3735,8 +3735,10 @@ void insertAsyncComm(
         // headConsumer for this token's task ID. Each consumer partition
         // needs its own wait point.
         int tokenTaskId = token.first;
-        LDBG("ConsumerWaitOp: tokenTaskId=" << tokenTaskId
-                                            << " headConsumer task=");
+        auto headConsumerTaskIds = getAsyncTaskIds(headConsumer);
+        LDBG("ConsumerWaitOp: tokenTaskId="
+             << tokenTaskId << " headConsumer task="
+             << (headConsumerTaskIds.empty() ? -1 : headConsumerTaskIds[0]));
         Operation *tokenHeadConsumer = headConsumer;
         for (auto &op : headConsumer->getBlock()->getOperations()) {
           if (consumerOps.count(&op)) {
@@ -3785,7 +3787,7 @@ void insertAsyncComm(
           builder.setLoopScheduleInfoFromOp(actualCons);
           LDBG("  inserting ConsumerWaitOp for task " << tokenTaskId);
           auto waitOp = builder.createWithAsyncTaskIds<ttnvws::ConsumerWaitOp>(
-              headConsumer->getLoc(), token.second, bufferIdx, phase);
+              tokenHeadConsumer->getLoc(), token.second, bufferIdx, phase);
           // Propagate the actual consumer's loop schedule to the
           // phase/bufferIdx value ops. These were computed earlier (by
           // getBufferIdxAndPhase) with no loop.stage/loop.cluster, but they
