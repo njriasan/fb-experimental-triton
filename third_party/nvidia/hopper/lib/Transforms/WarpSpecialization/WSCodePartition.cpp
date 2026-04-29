@@ -3149,6 +3149,23 @@ void insertAsyncComm(
           // Verify that consumer order matches producer order. If they
           // disagree, the dependency chain will create a deadlock (e.g.,
           // producer stores c01 before c00 but consumer reads c00 first).
+          //
+          // Skip this check when channels go through SubtiledRegionOps:
+          // getSrcOp/getDstOp return the template ops inside the tile body
+          // which are the same for all subtile channels.  The ordering is
+          // controlled by tile_mappings during lowering, not by program
+          // order of the template ops.
+          bool hasSubtiledSrc = llvm::any_of(ordered, [](Channel *ch) {
+            return ch->getSrcOp() &&
+                   ch->getSrcOp()
+                       ->getParentOfType<ttng::SubtiledRegionOp>() != nullptr;
+          });
+          bool hasSubtiledDst = llvm::any_of(ordered, [](Channel *ch) {
+            return ch->getDstOp() &&
+                   ch->getDstOp()
+                       ->getParentOfType<ttng::SubtiledRegionOp>() != nullptr;
+          });
+          if (!hasSubtiledSrc && !hasSubtiledDst) {
           for (size_t i = 1; i < ordered.size(); i++) {
             auto *prevConsumer = ordered[i - 1]->getDstOp();
             auto *curConsumer = ordered[i]->getDstOp();
@@ -3201,6 +3218,7 @@ void insertAsyncComm(
                    << wrapAroundChannelForReuseSync->uniqID);
             });
           }
+          } // end if (!hasSubtiledSrc && !hasSubtiledDst)
         }
       }
     }
