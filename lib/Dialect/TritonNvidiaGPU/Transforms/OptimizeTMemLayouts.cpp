@@ -448,6 +448,12 @@ public:
     m.walk([&](SubtiledRegionOp op) { subtileOps.push_back(op); });
     for (auto op : subtileOps)
       pushSubtiledRegionSetupToTile(op);
+
+    // Lower remaining SubtiledRegionOps into flat IR.
+    SmallVector<SubtiledRegionOp> remaining;
+    m.walk([&](SubtiledRegionOp op) { remaining.push_back(op); });
+    for (auto op : remaining)
+      lowerSubtiledRegion(op);
   }
 };
 

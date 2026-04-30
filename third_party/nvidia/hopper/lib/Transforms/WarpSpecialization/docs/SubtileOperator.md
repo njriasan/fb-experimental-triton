@@ -31,19 +31,17 @@ It has three regions:
 
 Key operands:
 - `inputs: Variadic<AnyType>` — all values captured from the enclosing scope
-- `tokenValues: Variadic<AnyType>` — NVWS token values for token annotations
 
 Key attributes:
 - `tileMappings: ArrayAttr` — one `DenseI32ArrayAttr` per tile mapping tile
   block args to setup yield indices
-- `tokenAnnotations: ArrayAttr` — NVWS token-layer annotations, resolved to
-  inline barrier ops during token lowering
 
 Key methods:
 - `addInputToTileBody(Value)` — threads a value through inputs → setup yield
-  → tile mappings → tile block argument. Used by doTokenLowering and
-  lowerTokenAnnotations to make barrier values accessible inside the tile
-  body while respecting IsolatedFromAbove.
+  → tile mappings → tile block argument. Used by `insertAsyncComm` to make
+  NVWS token/bufferIdx/phase values accessible inside the tile body, and by
+  `doTokenLowering` to thread barrier memdesc/phase values in. Respects
+  IsolatedFromAbove.
 
 Defined in `include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td`.
 
@@ -147,13 +145,13 @@ scheduleLoops
 ...
 add_optimize_tmem_layouts         ← pattern rewrites (split → tmem_subslice)
                                     + pushSubtiledRegionSetupToTile()
+                                    + lowerSubtiledRegion (all remaining)
 add_tma_lowering
 ...
 ```
 
-Remaining SubtiledRegionOps (without NVWS ops) survive through
-`add_optimize_tmem_layouts` where setup chains are optimized, then are
-lowered by the next pass that walks them.
+All remaining SubtiledRegionOps are lowered at the end of
+`add_optimize_tmem_layouts`, after setup push is complete.
 
 ### Compiler Option
 
@@ -164,13 +162,17 @@ lowered by the next pass that walks them.
 
 Default: `False`.
 
-### Token Annotations
+### NVWS Sync Ops in Tile Bodies
 
-`TokenAnnotationAttr` describes NVWS token-layer synchronization. During
-`doTokenLowering`, token annotations are resolved to inline
-`WaitBarrierOp`/`ArriveBarrierOp` ops placed inside the tile body. The
-barrier memdesc and phase values are threaded through `addInputToTileBody`
-so they're accessible inside the tile body despite `IsolatedFromAbove`.
+When `insertAsyncComm` (WSCodePartition) discovers a sync point inside a
+SubtiledRegionOp's tile body, it creates the NVWS op (ProducerAcquireOp,
+ConsumerWaitOp, etc.) directly inside the tile body, threading the token,
+bufferIdx, and phase values through `addInputToTileBody`.
+
+Before `doTokenLowering` runs, all SubtiledRegionOps containing NVWS ops
+are inlined via `lowerSubtiledRegion`. This puts the NVWS ops in flat IR
+where `doTokenLowering` processes them normally — replacing them with
+hardware `WaitBarrierOp`/`ArriveBarrierOp`.
 
 ### Test Coverage
 
