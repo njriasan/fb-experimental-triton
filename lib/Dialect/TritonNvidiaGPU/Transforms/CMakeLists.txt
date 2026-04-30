@@ -8,7 +8,6 @@ add_triton_library(TritonNvidiaGPUTransforms
   OptimizeDescriptorEncoding.cpp
   OptimizeTMemLayouts.cpp
   PlanCTA.cpp
-  PostSubtileStorePipeline.cpp
   PushSharedSetupToTile.cpp
   PromoteLHSToTMem.cpp
   PruneUnusedBarriers.cpp
