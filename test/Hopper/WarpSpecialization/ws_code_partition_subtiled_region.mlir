@@ -61,7 +61,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
                  !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,
                  !ttg.memdesc<128x64xf16, #shared, #smem, mutable>)
           tile_mappings = [array<i32: 0, 2>, array<i32: 1, 3>]
-          barrier_annotations = []
           {async_task_id = array<i32: 1>}
         setup {
         ^bb0(%a0: tensor<128x64xf32, #linear>, %a1: tensor<128x64xf32, #linear>,
@@ -91,7 +90,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
                  i32, i32,
                  !tt.tensordesc<tensor<128x64xf16, #shared>>, i32)
           tile_mappings = [array<i32: 0, 2, 4, 5>, array<i32: 1, 3, 4, 5>]
-          barrier_annotations = []
           {async_task_id = array<i32: 2>}
         setup {
         ^bb0(%a0: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>,

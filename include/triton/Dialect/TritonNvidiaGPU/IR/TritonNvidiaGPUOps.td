@@ -1155,10 +1155,6 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     one if the tile region has an extra trailing `i32` block argument for the
     tile index. When present, the tile index argument is substituted with the
     concrete tile index (0, 1, ...) during lowering.
-
-    `barrierAnnotations` describes where to insert barrier operations during
-    lowering. Each annotation references a target op by index in the tile body
-    (0-based, non-terminator ops only).
   }];
 
   let arguments = (ins
@@ -1167,7 +1163,6 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     Variadic<I64>:$accumCnts,
     Variadic<AnyType>:$tokenValues,
     ArrayAttr:$tileMappings,
-    ArrayAttr:$barrierAnnotations,
     ArrayAttr:$tokenAnnotations
   );
 

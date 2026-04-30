@@ -535,9 +535,6 @@ void pushSharedSetupToTile(SubtiledRegionOp op) {
   SubtiledRegionYieldOp::create(setupBuilder, setupYield.getLoc(),
                                 newYieldValues);
   setupYield.erase();
-
-  // No barrier annotation adjustment needed — annotations use side-effect-based
-  // positional indices that are stable across pure op insertions/removals.
 }
 
 } // anonymous namespace

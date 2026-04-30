@@ -112,51 +112,6 @@ def TTNG_BarrierRegion : I32EnumAttr<"BarrierRegion",
 }
 
 //===----------------------------------------------------------------------===//
-// BarrierAnnotation attribute
-//===----------------------------------------------------------------------===//
-
-def TTNG_BarrierAnnotationAttr : AttrDef<TritonNvidiaGPU_Dialect, "BarrierAnnotation"> {
-  let mnemonic = "barrier_annotation";
-  let description = [{
-    Describes where to insert a barrier operation during subtiled region lowering.
-
-    - `barrierIdx`: index into the op's barriers/accumCnts operand lists.
-      For tile-region annotations with a tileMask, the lowering computes the
-      per-tile barrier index as `(outerAccumCnt + tileIdx) % numBuffers`.
-    - `placement`: BEFORE or AFTER the target op
-    - `targetOpIdx`: index of the target op in the target region body (0-based,
-      counting only non-terminator ops)
-    - `barrierOpKind`: "wait_barrier" or "arrive_barrier"
-    - `count`: arrive count for arrive_barrier (default 1)
-    - `region`: which region the barrier targets (default TILE):
-        - TILE: placed in the per-tile body, controlled by tileMask
-        - SETUP: placed in the setup region (runs once, no mask)
-        - TEARDOWN: placed in the teardown region (runs once, no mask)
-    - `numBuffers`: number of buffers for phase and buffer index computation
-      (default 1). At lowering time, for each tile replication where
-      tileMask[tileIdx] is true:
-        tileAccumCnt = outerAccumCnt + tileIdx
-        bufferIdx    = tileAccumCnt % numBuffers
-        phase        = (tileAccumCnt / numBuffers) & 1
-    - `tileMask`: per-tile boolean mask (one entry per tile). The barrier is
-      only emitted for tiles where the mask is true. Empty mask means emit
-      on all tiles. Only used for TILE region annotations.
-  }];
-  let parameters = (
-    ins
-    "unsigned":$barrierIdx,
-    "BarrierPlacement":$placement,
-    "unsigned":$targetOpIdx,
-    "StringAttr":$barrierOpKind,
-    DefaultValuedParameter<"unsigned", "1">:$count,
-    DefaultValuedParameter<"BarrierRegion", "BarrierRegion::TILE">:$region,
-    DefaultValuedParameter<"unsigned", "1">:$numBuffers,
-    OptionalParameter<"DenseI32ArrayAttr">:$tileMask
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-}
-
-//===----------------------------------------------------------------------===//
 // TokenAnnotation attribute
 //===----------------------------------------------------------------------===//
 
@@ -164,11 +119,9 @@ def TTNG_TokenAnnotationAttr : AttrDef<TritonNvidiaGPU_Dialect, "TokenAnnotation
   let mnemonic = "token_annotation";
   let description = [{
     Describes where to insert a token-based synchronization operation during
-    subtiled region lowering. This is the token-layer analog of
-    `BarrierAnnotationAttr` — it references NVWS tokens (ConsumerWaitOp /
-    ConsumerReleaseOp) instead of mbarrier ops (WaitBarrierOp /
-    ArriveBarrierOp). Token annotations are resolved to barrier annotations
-    during `doTokenLowering`.
+    subtiled region lowering. References NVWS tokens (ConsumerWaitOp /
+    ConsumerReleaseOp). Token annotations are resolved to hardware barrier
+    ops during `doTokenLowering`.
 
     - `tokenIdx`: index into the op's `tokenValues` operand list (the NVWS
       token Value).

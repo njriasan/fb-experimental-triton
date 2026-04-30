@@ -1367,10 +1367,6 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
   p << " tile_mappings = ";
   p.printAttribute(getTileMappings());
 
-  // Print barrierAnnotations
-  p << " barrier_annotations = ";
-  p.printAttribute(getBarrierAnnotations());
-
   // Print tokenAnnotations
   if (!getTokenAnnotations().empty()) {
     p << " token_annotations = ";
@@ -1378,9 +1374,9 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
   }
 
   // Print attr-dict (excluding our custom attrs and operand segment sizes)
-  p.printOptionalAttrDict((*this)->getAttrs(),
-                          {"tileMappings", "barrierAnnotations",
-                           "tokenAnnotations", getOperandSegmentSizeAttr()});
+  p.printOptionalAttrDict(
+      (*this)->getAttrs(),
+      {"tileMappings", "tokenAnnotations", getOperandSegmentSizeAttr()});
 
   // Print setup region (with block args from inputs)
   p << " setup";
@@ -1447,13 +1443,6 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
       parser.parseAttribute(tileMappingsAttr))
     return failure();
   result.addAttribute("tileMappings", tileMappingsAttr);
-
-  // Parse barrier_annotations = <attr>
-  Attribute barrierAnnotationsAttr;
-  if (parser.parseKeyword("barrier_annotations") || parser.parseEqual() ||
-      parser.parseAttribute(barrierAnnotationsAttr))
-    return failure();
-  result.addAttribute("barrierAnnotations", barrierAnnotationsAttr);
 
   // Parse optional token_annotations = <attr>
   if (succeeded(parser.parseOptionalKeyword("token_annotations"))) {

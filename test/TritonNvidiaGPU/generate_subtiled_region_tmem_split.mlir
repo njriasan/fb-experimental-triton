@@ -25,7 +25,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.convert_layout
   // CHECK-NOT: tt.split
   // CHECK: ttng.subtiled_region inputs(
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{

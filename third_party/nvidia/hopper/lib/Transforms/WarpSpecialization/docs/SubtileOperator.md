@@ -28,10 +28,8 @@ copies of inlined code.
 Key attributes:
 - `tileMappings: ArrayAttr` — one `DenseI32ArrayAttr` per tile mapping tile
   block args to setup yield indices
-- `barrierAnnotations: ArrayAttr` — where to insert wait/arrive barrier ops
-  during lowering (uses `subtile_op_id` for stable targeting)
-- `tokenAnnotations: ArrayAttr` — NVWS token-layer annotations, converted to
-  barrier annotations during token lowering
+- `tokenAnnotations: ArrayAttr` — NVWS token-layer annotations, resolved to
+  inline barrier ops during token lowering
 
 Defined in `include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td`.
 
@@ -104,10 +102,7 @@ The push logic lives in `PushSharedSetupToTile.cpp` and is exposed via the
 Expands each `SubtiledRegionOp` into flat IR:
 1. Inlines setup ops
 2. Replicates tile body N times with value substitution from tile mappings
-3. Inserts `WaitBarrierOp`/`ArriveBarrierOp` at positions specified by
-   barrier annotations (using `subtile_op_id` for stable op targeting and
-   `tileMask` for selective per-tile firing)
-4. Inlines teardown ops
+3. Inlines teardown ops
 
 Also exported as a public function `lowerSubtiledRegion(SubtiledRegionOp)`
 for use by other passes (e.g., WSCodePartition for multi-task fallback).
@@ -130,8 +125,8 @@ doAnnotateTMAStoreWaits
 doValidateTMAStoreAnnotations
 doCodePartitionPost               ← adds token annotations on SubtiledRegionOps;
                                     multi-task SubtiledRegionOps lowered here
-doTokenLowering                   ← converts tokens → barrier annotations
-scheduleLoops                       (SubtiledRegionOps survive with annotations)
+doTokenLowering                   ← resolves tokens → inline barrier ops
+scheduleLoops                       (SubtiledRegionOps survive with inline barriers)
 ```
 
 **In the main TTGIR pipeline** (`compiler.py`), after the WS pass:
@@ -140,15 +135,15 @@ scheduleLoops                       (SubtiledRegionOps survive with annotations)
 ...
 add_optimize_tmem_layouts         ← pattern rewrites (split → tmem_subslice)
                                     + pushSubtiledRegionSetupToTile()
-add_lower_subtiled_region         ← expands tile bodies with per-tile barriers
+add_lower_subtiled_region         ← expands tile bodies
 add_tma_lowering
 ...
 ```
 
 This separation is critical: `doGenerateSubtiledRegion` only creates the
 SubtiledRegionOps (no tmem optimization, no setup push). The SubtiledRegionOps
-survive through the WS pass where they receive barrier annotations via token
-lowering. Only after the WS pass completes does `add_optimize_tmem_layouts`
+survive through the WS pass where token annotations are resolved to inline
+barrier ops. Only after the WS pass completes does `add_optimize_tmem_layouts`
 transform the setup chains (both inside SubtiledRegionOps and bare splits
 elsewhere), and `add_lower_subtiled_region` expands the tile bodies.
 
@@ -168,19 +163,11 @@ lowered as a fallback inside `doCodePartitionPost` before `specializeRegion`.
 
 Default: `False`.
 
-### Barrier & Token Annotations
+### Token Annotations
 
-`BarrierAnnotationAttr` specifies per-tile barrier placement:
-- `barrierIdx` — index into the op's barriers/accumCnts
-- `placement` — BEFORE or AFTER target op
-- `targetOpIdx` — matched via `subtile_op_id` attribute on tile body ops
-- `barrierOpKind` — `"wait_barrier"` or `"arrive_barrier"`
-- `tileMask` — per-tile enable mask (empty = all tiles)
-- `region` — TILE, SETUP, or TEARDOWN
-- `numBuffers` — for multi-buffer phase/index computation
-
-`TokenAnnotationAttr` is the NVWS token-layer equivalent, resolved to
-`BarrierAnnotationAttr` during `doTokenLowering`.
+`TokenAnnotationAttr` describes NVWS token-layer synchronization. During
+`doTokenLowering`, token annotations are resolved to inline
+`WaitBarrierOp`/`ArriveBarrierOp` ops placed inside the tile body.
 
 ### Test Coverage
 

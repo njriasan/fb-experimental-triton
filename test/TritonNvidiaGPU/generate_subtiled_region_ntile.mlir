@@ -28,7 +28,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
   // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{
@@ -98,7 +97,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-SAME: array<i32: 5,
   // CHECK-SAME: array<i32: 6,
   // CHECK-SAME: array<i32: 7,
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{
@@ -192,7 +190,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
   // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:   } tile{
   // CHECK:     arith.truncf
@@ -202,7 +199,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // Second: local_load + convert_layout (task 4)
   // CHECK: ttng.subtiled_region inputs(
   // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>, array<i32: 2>, array<i32: 3>]
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:   } tile{
   // CHECK:     ttg.local_load

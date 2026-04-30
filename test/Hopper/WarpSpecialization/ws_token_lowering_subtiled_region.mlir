@@ -1,7 +1,7 @@
 // RUN: triton-opt %s --nvgpu-warp-specialization="generate-subtiled-region=true" | FileCheck %s
 
-// Test: token lowering correctly converts SubtiledRegionOp token_annotations
-// to barrier_annotations when the SubtiledRegionOps are inside
+// Test: token lowering correctly resolves SubtiledRegionOp token_annotations
+// to inline barrier ops when the SubtiledRegionOps are inside
 // warp_specialize partition regions (FLATTEN=False persistent loop).
 //
 // Previously, doTokenLowering failed to match token_values entries in
@@ -30,21 +30,19 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttng.arrive_barrier %{{.*}}, 1
   // CHECK: gpu.barrier
   //
-  // After token lowering, SubtiledRegionOps should have barrier_annotations
-  // (not token_annotations) with proper wait/arrive barrier ops.
+  // After token lowering, SubtiledRegionOps should have inline barrier ops
+  // in their tile bodies (not token_annotations).
   // Both partitions use the same physical barriers (consistent ordering).
   // CHECK: ttg.warp_specialize
   //
-  // Partition 0 (epilogue): SubtiledRegionOp with barrier_annotations
+  // Partition 0 (epilogue): SubtiledRegionOp with inline barriers
   // CHECK: partition0
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: barrier_annotations
   // CHECK-NOT: token_annotations
   //
-  // Partition 1 (store): SubtiledRegionOp with barrier_annotations
+  // Partition 1 (store): SubtiledRegionOp with inline barriers
   // CHECK: partition1
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: barrier_annotations
   // CHECK-NOT: token_annotations
   tt.func public @persistent_subtile_token_lowering(
       %a_desc: !tt.tensordesc<tensor<128x64xf16, #shared>>,

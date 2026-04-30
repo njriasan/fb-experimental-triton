@@ -426,7 +426,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-SAME: array<i32: 1,
   // CHECK-SAME: array<i32: 2,
   // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   } tile{

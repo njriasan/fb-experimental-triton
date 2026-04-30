@@ -36,7 +36,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     ttng.subtiled_region
         inputs(%lhs, %rhs, %smem0, %smem1, %bar, %phase : tensor<128x64xf32, #linear>, tensor<128x64xf32, #linear>, !ttg.memdesc<128x64xf16, #shared, #smem, mutable>, !ttg.memdesc<128x64xf16, #shared, #smem, mutable>, !ttg.memdesc<1xi64, #shared1, #smem, mutable>, i32)
         tile_mappings = [array<i32: 0, 2, 4, 5>, array<i32: 1, 3, 4, 5>]
-        barrier_annotations = []
       setup {
       ^bb0(%arg0: tensor<128x64xf32, #linear>, %arg1: tensor<128x64xf32, #linear>, %arg2: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>, %arg3: !ttg.memdesc<128x64xf16, #shared, #smem, mutable>, %arg4: !ttg.memdesc<1xi64, #shared1, #smem, mutable>, %arg5: i32):
         ttng.subtiled_region_yield %arg1, %arg0, %arg3, %arg2, %arg4, %arg5 : tensor<128x64xf32, #linear>, tensor<128x64xf32, #linear>, !ttg.memdesc<128x64xf16, #shared, #smem, mutable>, !ttg.memdesc<128x64xf16, #shared, #smem, mutable>, !ttg.memdesc<1xi64, #shared1, #smem, mutable>, i32
@@ -83,7 +82,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     ttng.subtiled_region
         inputs(%smem0, %smem1, %off0, %off1, %desc, %bar, %phase : !ttg.memdesc<128x64xf16, #shared_b, #smem_b, mutable>, !ttg.memdesc<128x64xf16, #shared_b, #smem_b, mutable>, i32, i32, !tt.tensordesc<tensor<128x64xf16, #shared_b>>, !ttg.memdesc<1xi64, #shared1_b, #smem_b, mutable>, i32)
         tile_mappings = [array<i32: 0, 2, 4, 5, 6>, array<i32: 1, 3, 4, 5, 6>]
-        barrier_annotations = []
       setup {
       ^bb0(%arg0: !ttg.memdesc<128x64xf16, #shared_b, #smem_b, mutable>, %arg1: !ttg.memdesc<128x64xf16, #shared_b, #smem_b, mutable>, %arg2: i32, %arg3: i32, %arg4: !tt.tensordesc<tensor<128x64xf16, #shared_b>>, %arg5: !ttg.memdesc<1xi64, #shared1_b, #smem_b, mutable>, %arg6: i32):
         ttng.subtiled_region_yield %arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6 : !ttg.memdesc<128x64xf16, #shared_b, #smem_b, mutable>, !ttg.memdesc<128x64xf16, #shared_b, #smem_b, mutable>, i32, i32, !tt.tensordesc<tensor<128x64xf16, #shared_b>>, !ttg.memdesc<1xi64, #shared1_b, #smem_b, mutable>, i32

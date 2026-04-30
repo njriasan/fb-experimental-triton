@@ -14,7 +14,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // and removed from setup yield and tile args.
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
   // CHECK:   } tile{
@@ -25,7 +24,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   tt.func @push_shared_constant() {
     ttng.subtiled_region
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-        barrier_annotations = []
       setup {
         %c0 = arith.constant 0 : i32
         %c128 = arith.constant 128 : i32
@@ -55,7 +53,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // so the shared arg stays in the tile body via mappings.
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}}, %{{.*}} : i32, i32, i32
   // CHECK:   } tile{
@@ -66,7 +63,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     ttng.subtiled_region
         inputs(%ext : i32)
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-        barrier_annotations = []
       setup {
       ^bb0(%sext: i32):
         %c0 = arith.constant 0 : i32
@@ -90,7 +86,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
   // CHECK-LABEL: @no_shared_args
   // CHECK: tile_mappings = [array<i32: 0>, array<i32: 1>]
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}} : i32, i32
   // CHECK:   } tile{
@@ -98,7 +93,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   tt.func @no_shared_args() {
     ttng.subtiled_region
         tile_mappings = [array<i32: 0>, array<i32: 1>]
-        barrier_annotations = []
       setup {
         %c0 = arith.constant 0 : i32
         %c1 = arith.constant 1 : i32
@@ -124,7 +118,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // IsolatedFromAbove.
   // CHECK: ttng.subtiled_region
   // CHECK-SAME: tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.subtiled_region_yield %{{.*}}, %{{.*}}, %{{.*}} : i32, i32, i32
   // CHECK:   } tile{
@@ -135,7 +128,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     ttng.subtiled_region
         inputs(%ext : i32)
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-        barrier_annotations = []
       setup {
       ^bb0(%sext: i32):
         %c0 = arith.constant 0 : i32
@@ -145,48 +137,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         ttng.subtiled_region_yield %c0, %c128, %shared : i32, i32, i32
       } tile(%arg0: i32, %arg1: i32) {
         %prod = arith.muli %arg0, %arg1 : i32
-        ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
-      }
-    tt.return
-  }
-}
-
-// -----
-
-// Test: barrier annotations have their targetOpIdx updated when ops are
-// inserted at the start of the tile body.
-
-#shared5 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
-#smem5 = #ttg.shared_memory
-
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-
-  // CHECK-LABEL: @barrier_annotation_reindex
-  // Barrier annotations use side-effect-based positional indices, so
-  // targetOpIdx is unchanged when pure ops are inserted before the target.
-  // CHECK: ttng.subtiled_region
-  // CHECK-SAME: barrier_annotations =
-  // CHECK-SAME: targetOpIdx = 0
-  tt.func @barrier_annotation_reindex(
-      %bar: !ttg.memdesc<1xi64, #shared5, #smem5, mutable>,
-      %accum_cnt: i64) {
-    ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared5, #smem5, mutable>)
-        accum_cnts(%accum_cnt : i64)
-        tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-        barrier_annotations = [
-          #ttng.barrier_annotation<barrierIdx = 0, placement = before,
-              targetOpIdx = 0, barrierOpKind = "wait_barrier">
-        ]
-      setup {
-        %c0 = arith.constant 0 : i32
-        %c128 = arith.constant 128 : i32
-        %c42 = arith.constant 42 : i32
-        ttng.subtiled_region_yield %c0, %c128, %c42 : i32, i32, i32
-      } tile(%arg0: i32, %arg1: i32) {
-        %sum = arith.addi %arg0, %arg1 : i32
         ttng.subtiled_region_yield
       } teardown {
         ttng.subtiled_region_yield
@@ -212,7 +162,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-LABEL: @push_tmem_load_to_tile
   // The tile body should receive a memdesc arg and contain tmem_load + convert_layout.
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: barrier_annotations = []
   // CHECK-SAME: setup{
   // CHECK:     ttng.tmem_subslice
   // CHECK:     ttng.tmem_subslice
@@ -229,7 +178,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
     ttng.subtiled_region
         inputs(%tmem_buf : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable>)
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 3>]
-        barrier_annotations = []
       setup {
       ^bb0(%stmem: !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable>):
         %s0 = ttng.tmem_subslice %stmem {N = 0 : i32} : !ttg.memdesc<128x128xf32, #tmem6, #ttng.tensor_memory, mutable> -> !ttg.memdesc<128x64xf32, #tmem6s, #ttng.tensor_memory, mutable, 128x128>
@@ -270,7 +218,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   tt.func @sink_shared_to_consumer() {
     ttng.subtiled_region
         tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-        barrier_annotations = []
       setup {
         %c0 = arith.constant 0 : i32
         %c128 = arith.constant 128 : i32
@@ -279,53 +226,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       } tile(%arg0: i32, %arg1: i32) {
         %prod = arith.muli %arg0, %arg0 : i32
         %sum = arith.addi %prod, %arg1 : i32
-        ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
-      }
-    tt.return
-  }
-}
-
-// -----
-
-// Test: lowering a tile body with a barrier annotation and pushed shared
-// ops produces the barrier at the correct position (after the pushed ops,
-// before the annotated op).
-
-#shared8 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
-#smem8 = #ttg.shared_memory
-
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-
-  // CHECK-LABEL: @barrier_after_pushed_ops
-  // After pushing the shared constant, the barrier annotation on the muli
-  // should still target the muli, not the pushed constant.
-  // CHECK: ttng.subtiled_region
-  // CHECK-SAME: targetOpIdx = 0
-  // CHECK:   } tile{
-  // CHECK:     arith.constant 42
-  // CHECK:     arith.muli {{.*}}
-  // CHECK:     ttng.subtiled_region_yield
-  // CHECK:   }
-  tt.func @barrier_after_pushed_ops(
-      %bar: !ttg.memdesc<1xi64, #shared8, #smem8, mutable>,
-      %accum_cnt: i64) {
-    ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared8, #smem8, mutable>)
-        accum_cnts(%accum_cnt : i64)
-        tile_mappings = [array<i32: 0, 2>, array<i32: 1, 2>]
-        barrier_annotations = [
-          #ttng.barrier_annotation<barrierIdx = 0, placement = before,
-              targetOpIdx = 0, barrierOpKind = "wait_barrier">
-        ]
-      setup {
-        %c0 = arith.constant 0 : i32
-        %c128 = arith.constant 128 : i32
-        %c42 = arith.constant 42 : i32
-        ttng.subtiled_region_yield %c0, %c128, %c42 : i32, i32, i32
-      } tile(%arg0: i32, %arg1: i32) {
-        %prod = arith.muli %arg0, %arg1 : i32
         ttng.subtiled_region_yield
       } teardown {
         ttng.subtiled_region_yield
