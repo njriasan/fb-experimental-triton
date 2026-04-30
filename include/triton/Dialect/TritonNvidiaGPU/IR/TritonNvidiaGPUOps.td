@@ -1127,8 +1127,7 @@ def TTNG_PrefetchTensormapOp: TTNG_Op<
 
 def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     IsolatedFromAbove,
-    RecursiveMemoryEffects,
-    AttrSizedOperandSegments
+    RecursiveMemoryEffects
 ]> {
   let summary = "Encapsulates a subtiling pattern for epilogue operations";
 
@@ -1159,9 +1158,7 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
 
   let arguments = (ins
     Variadic<AnyType>:$inputs,
-    Variadic<AnyType>:$tokenValues,
-    ArrayAttr:$tileMappings,
-    ArrayAttr:$tokenAnnotations
+    ArrayAttr:$tileMappings
   );
 
   let results = (outs Variadic<AnyType>:$results);

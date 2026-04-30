@@ -1,14 +1,9 @@
 // RUN: triton-opt %s --nvgpu-warp-specialization="generate-subtiled-region=true" | FileCheck %s
 
-// Test: token lowering correctly resolves SubtiledRegionOp token_annotations
-// to inline barrier ops when the SubtiledRegionOps are inside
-// warp_specialize partition regions (FLATTEN=False persistent loop).
-//
-// Previously, doTokenLowering failed to match token_values entries in
-// SubtiledRegionOps inside warp_specialize partitions because the
-// SubtiledRegionOps reference block arguments (captures) rather than the
-// original CreateTokenOp result. This caused "Cannot destroy a value that
-// still has uses!" when erasing the token block argument.
+// Test: token lowering correctly resolves inline NVWS ops inside
+// SubtiledRegionOp tile bodies to hardware barrier ops when the
+// SubtiledRegionOps are inside warp_specialize partition regions
+// (FLATTEN=False persistent loop).
 
 #blocked = #ttg.blocked<{sizePerThread = [1, 8], threadsPerWarp = [4, 8], warpsPerCTA = [4, 1], order = [1, 0]}>
 #linear = #ttg.linear<{register = [[0, 1], [0, 2], [0, 4], [0, 8], [0, 16], [0, 32], [0, 64]], lane = [[1, 0], [2, 0], [4, 0], [8, 0], [16, 0]], warp = [[32, 0], [64, 0]], block = []}>
@@ -24,26 +19,21 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
   // CHECK-LABEL: @persistent_subtile_token_lowering
   //
-  // Verify empty barrier is pre-arrived for first-iteration semantics:
-  // CHECK: ttng.init_barrier %{{.*}}, 1
-  // CHECK: ttng.init_barrier %{{.*}}, 1
-  // CHECK: ttng.arrive_barrier %{{.*}}, 1
-  // CHECK: gpu.barrier
-  //
-  // After token lowering, SubtiledRegionOps should have inline barrier ops
-  // in their tile bodies (not token_annotations).
-  // Both partitions use the same physical barriers (consistent ordering).
+  // SubtiledRegionOps with NVWS ops are inlined before token lowering.
+  // Verify barrier ops appear in the warp_specialize partitions.
   // CHECK: ttg.warp_specialize
   //
-  // Partition 0 (epilogue): SubtiledRegionOp with inline barriers
+  // Partition 0 (epilogue): inlined barrier + local_store ops
   // CHECK: partition0
-  // CHECK: ttng.subtiled_region
-  // CHECK-NOT: token_annotations
+  // CHECK: ttng.wait_barrier
+  // CHECK: ttg.local_store
+  // CHECK: ttng.arrive_barrier
   //
-  // Partition 1 (store): SubtiledRegionOp with inline barriers
+  // Partition 1 (store): inlined barrier + TMA copy ops
   // CHECK: partition1
-  // CHECK: ttng.subtiled_region
-  // CHECK-NOT: token_annotations
+  // CHECK: ttng.wait_barrier
+  // CHECK: ttng.async_tma_copy_local_to_global
+  // CHECK: ttng.arrive_barrier
   tt.func public @persistent_subtile_token_lowering(
       %a_desc: !tt.tensordesc<tensor<128x64xf16, #shared>>,
       %b_desc: !tt.tensordesc<tensor<128x64xf16, #shared>>,

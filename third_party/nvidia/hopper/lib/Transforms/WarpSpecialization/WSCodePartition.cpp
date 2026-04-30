@@ -42,73 +42,6 @@ namespace mlir {
 /// into the tile body. Used for multi-task SubtiledRegionOps that are lowered
 /// before doTokenLowering runs (the inline ops survive into warp partitions
 /// and get converted to mbarriers by doTokenLowering later).
-static void lowerTokenAnnotations(ttng::SubtiledRegionOp op) {
-  ArrayAttr tokenAnnotations = op.getTokenAnnotations();
-  if (tokenAnnotations.empty())
-    return;
-
-  Block &tileBlock = op.getTileRegion().front();
-  ValueRange tokenValues = op.getTokenValues();
-
-  // Thread all needed tokenValues through inputs -> setup -> tile body.
-  DenseMap<unsigned, BlockArgument> tokenIdxToTileArg;
-  for (Attribute attr : tokenAnnotations) {
-    auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
-    for (unsigned idx :
-         {annotation.getTokenIdx(), annotation.getBufferIdxIdx()}) {
-      if (!tokenIdxToTileArg.count(idx))
-        tokenIdxToTileArg[idx] = op.addInputToTileBody(tokenValues[idx]);
-    }
-    int phaseIdx = annotation.getPhaseIdx();
-    if (phaseIdx >= 0 && !tokenIdxToTileArg.count(phaseIdx))
-      tokenIdxToTileArg[phaseIdx] =
-          op.addInputToTileBody(tokenValues[phaseIdx]);
-  }
-
-  // Build a map from side-effect-based positional index to op.
-  // targetOpIdx refers to the Nth side-effecting op in the tile body.
-  llvm::DenseMap<unsigned, Operation *> idToOp;
-  unsigned sideEffectIdx = 0;
-  for (Operation &tileOp : tileBlock.without_terminator()) {
-    if (!isMemoryEffectFree(&tileOp))
-      idToOp[sideEffectIdx++] = &tileOp;
-  }
-
-  OpBuilder builder(op);
-  for (Attribute attr : tokenAnnotations) {
-    auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
-    unsigned targetId = annotation.getTargetOpIdx();
-    auto it = idToOp.find(targetId);
-    assert(it != idToOp.end() && "target op ID not found in tile body");
-    Operation *targetOp = it->second;
-
-    if (annotation.getPlacement() == ttng::BarrierPlacement::BEFORE)
-      builder.setInsertionPoint(targetOp);
-    else
-      builder.setInsertionPointAfter(targetOp);
-
-    Value token = tokenIdxToTileArg[annotation.getTokenIdx()];
-    Value bufferIdx = tokenIdxToTileArg[annotation.getBufferIdxIdx()];
-    StringRef kind = annotation.getTokenOpKind().getValue();
-
-    if (kind == "consumer_wait") {
-      int phaseIdx = annotation.getPhaseIdx();
-      assert(phaseIdx >= 0);
-      Value phase = tokenIdxToTileArg[phaseIdx];
-      ttnvws::ConsumerWaitOp::create(builder, targetOp->getLoc(), token,
-                                     bufferIdx, phase);
-    } else {
-      assert(kind == "consumer_release");
-      ttnvws::ConsumerReleaseOp::create(builder, targetOp->getLoc(), token,
-                                        bufferIdx);
-    }
-  }
-
-  MLIRContext *ctx = op.getContext();
-  op.setTokenAnnotationsAttr(ArrayAttr::get(ctx, {}));
-  op.getTokenValuesMutable().assign(ValueRange{});
-}
-
 /// If `op` is inside a SubtiledRegionOp's tile region, return that op.
 static ttng::SubtiledRegionOp getEnclosingSubtiledRegionTile(Operation *op) {
   for (Operation *parent = op->getParentOp(); parent;
@@ -120,55 +53,6 @@ static ttng::SubtiledRegionOp getEnclosingSubtiledRegionTile(Operation *op) {
     }
   }
   return nullptr;
-}
-
-/// Return the side-effect-based positional index of `targetOp` within
-/// the tile body. targetOpIdx in barrier/token annotations refers to the
-/// Nth side-effecting (non-pure) op, which is stable across CSE and
-/// canonicalization removing pure ops like convert_layout.
-static unsigned getSideEffectIndex(ttng::SubtiledRegionOp subtiled,
-                                   Operation *targetOp) {
-  Block &tileBlock = subtiled.getTileRegion().front();
-  unsigned idx = 0;
-  for (Operation &op : tileBlock.without_terminator()) {
-    if (&op == targetOp)
-      return idx;
-    if (!isMemoryEffectFree(&op))
-      ++idx;
-  }
-  llvm_unreachable("targetOp not found in tile body");
-}
-
-/// Add a token annotation to a SubtiledRegionOp instead of creating an
-/// inline ConsumerWaitOp or ConsumerReleaseOp.
-static void addTokenAnnotation(ttng::SubtiledRegionOp subtiled, Value token,
-                               Value bufferIdx, Value phase,
-                               ttng::BarrierPlacement placement,
-                               unsigned targetOpIdx, StringRef kind) {
-  MLIRContext *ctx = subtiled.getContext();
-
-  // Add token, bufferIdx, phase to the tokenValues operand list.
-  unsigned tokenIdx = subtiled.getTokenValues().size();
-  unsigned bufferIdxIdx = tokenIdx + 1;
-  int phaseIdx = (phase) ? static_cast<int>(tokenIdx + 2) : -1;
-
-  SmallVector<Value> newTokenValues(subtiled.getTokenValues());
-  newTokenValues.push_back(token);
-  newTokenValues.push_back(bufferIdx);
-  if (phase)
-    newTokenValues.push_back(phase);
-  subtiled.getTokenValuesMutable().assign(newTokenValues);
-
-  // Create the annotation.
-  auto kindAttr = StringAttr::get(ctx, kind);
-  auto annotation = ttng::TokenAnnotationAttr::get(
-      ctx, tokenIdx, bufferIdxIdx, phaseIdx, placement, targetOpIdx, kindAttr,
-      ttng::BarrierRegion::TILE);
-
-  SmallVector<Attribute> annotations(subtiled.getTokenAnnotations().begin(),
-                                     subtiled.getTokenAnnotations().end());
-  annotations.push_back(annotation);
-  subtiled.setTokenAnnotationsAttr(ArrayAttr::get(ctx, annotations));
 }
 
 static unsigned getNumBuffersOrDefault(scf::ForOp forOp, unsigned numBuffers) {
@@ -3559,8 +3443,6 @@ void insertAsyncComm(
         // Insert ProducerAcquireOp before the producer.
         auto producerAcquirePoint =
             getSameLevelOp(headConsumer, tmaHeadProducer);
-        // If the producer is inside a SubtiledRegionOp, use
-        // annotation instead of inline op.
         auto producerSubtiled =
             getEnclosingSubtiledRegionTile(producerAcquirePoint);
         if (!producerSubtiled)
@@ -3569,12 +3451,14 @@ void insertAsyncComm(
           auto annotTarget = getEnclosingSubtiledRegionTile(tmaHeadProducer)
                                  ? tmaHeadProducer
                                  : producerAcquirePoint;
-          unsigned targetOpIdx =
-              getSideEffectIndex(producerSubtiled, annotTarget);
-          addTokenAnnotation(producerSubtiled, token.second, bufferIdx, phase,
-                             ttng::BarrierPlacement::BEFORE, targetOpIdx,
-                             "producer_acquire");
-          LDBG("create ProducerAcquire annotation on SubtiledRegionOp "
+          auto tileToken = producerSubtiled.addInputToTileBody(token.second);
+          auto tileBufIdx = producerSubtiled.addInputToTileBody(bufferIdx);
+          auto tilePhase = producerSubtiled.addInputToTileBody(phase);
+          OpBuilder tileBuilder(annotTarget);
+          tileBuilder.setInsertionPoint(annotTarget);
+          ttnvws::ProducerAcquireOp::create(tileBuilder, annotTarget->getLoc(),
+                                            tileToken, tileBufIdx, tilePhase);
+          LDBG("create inline ProducerAcquire in SubtiledRegionOp "
                << masterChannel->uniqID << " ");
         } else {
           builder.setAsynTaskIdsFromArray(masterChannel->relation.first);
@@ -3712,7 +3596,6 @@ void insertAsyncComm(
         } else {
           producerCommitPoint = getSameLevelOp(headConsumer, tailProducer);
         }
-        // If the producer is inside a SubtiledRegionOp, use annotation.
         auto commitSubtiled =
             getEnclosingSubtiledRegionTile(producerCommitPoint);
         if (!commitSubtiled)
@@ -3721,12 +3604,13 @@ void insertAsyncComm(
           auto annotTarget = getEnclosingSubtiledRegionTile(tailProducer)
                                  ? tailProducer
                                  : producerCommitPoint;
-          unsigned targetOpIdx =
-              getSideEffectIndex(commitSubtiled, annotTarget);
-          addTokenAnnotation(commitSubtiled, token.second, bufferIdx,
-                             /*phase=*/Value(), ttng::BarrierPlacement::AFTER,
-                             targetOpIdx, "producer_commit");
-          LDBG("create ProducerCommit annotation on SubtiledRegionOp "
+          auto tileToken = commitSubtiled.addInputToTileBody(token.second);
+          auto tileBufIdx = commitSubtiled.addInputToTileBody(bufferIdx);
+          OpBuilder tileBuilder(annotTarget);
+          tileBuilder.setInsertionPointAfter(annotTarget);
+          ttnvws::ProducerCommitOp::create(tileBuilder, annotTarget->getLoc(),
+                                           tileToken, tileBufIdx);
+          LDBG("create inline ProducerCommit in SubtiledRegionOp "
                << masterChannel->uniqID << " ");
         } else {
           LLVM_DEBUG({
@@ -3778,20 +3662,23 @@ void insertAsyncComm(
             subtiled = sr;
         }
         if (subtiled) {
-          Operation *annotTarget = tokenHeadConsumer;
+          Operation *insertTarget = tokenHeadConsumer;
           if (isa<ttng::SubtiledRegionOp>(tokenHeadConsumer)) {
             auto &tileBlock = subtiled.getTileRegion().front();
-            annotTarget = &tileBlock.front();
+            insertTarget = &tileBlock.front();
           } else if (getEnclosingSubtiledRegionTile(tokenHeadConsumer)) {
-            annotTarget = tokenHeadConsumer;
+            insertTarget = tokenHeadConsumer;
           } else {
-            annotTarget = consumerWaitPoint;
+            insertTarget = consumerWaitPoint;
           }
-          unsigned targetOpIdx = getSideEffectIndex(subtiled, annotTarget);
-          addTokenAnnotation(subtiled, token.second, bufferIdx, phase,
-                             ttng::BarrierPlacement::BEFORE, targetOpIdx,
-                             "consumer_wait");
-          LDBG("create ConsumerWait annotation on SubtiledRegionOp "
+          auto tileToken = subtiled.addInputToTileBody(token.second);
+          auto tileBufIdx = subtiled.addInputToTileBody(bufferIdx);
+          auto tilePhase = subtiled.addInputToTileBody(phase);
+          OpBuilder tileBuilder(insertTarget);
+          tileBuilder.setInsertionPoint(insertTarget);
+          ttnvws::ConsumerWaitOp::create(tileBuilder, insertTarget->getLoc(),
+                                         tileToken, tileBufIdx, tilePhase);
+          LDBG("create inline ConsumerWait in SubtiledRegionOp "
                << masterChannel->uniqID << " ");
         } else {
           builder.setInsertionPoint(consumerWaitPoint);
@@ -3847,21 +3734,22 @@ void insertAsyncComm(
             subtiled = sr;
         }
         if (subtiled) {
-          Operation *annotTarget = tailConsumer;
+          Operation *insertTarget = tailConsumer;
           if (isa<ttng::SubtiledRegionOp>(tailConsumer)) {
-            // Use the last non-terminator op in tile body for AFTER.
             auto &tileBlock = subtiled.getTileRegion().front();
-            annotTarget = &*std::prev(tileBlock.without_terminator().end());
+            insertTarget = &*std::prev(tileBlock.without_terminator().end());
           } else if (getEnclosingSubtiledRegionTile(tailConsumer)) {
-            annotTarget = tailConsumer;
+            insertTarget = tailConsumer;
           } else {
-            annotTarget = consumerReleasePoint;
+            insertTarget = consumerReleasePoint;
           }
-          unsigned targetOpIdx = getSideEffectIndex(subtiled, annotTarget);
-          addTokenAnnotation(subtiled, token.second, bufferIdx,
-                             /*phase=*/Value(), ttng::BarrierPlacement::AFTER,
-                             targetOpIdx, "consumer_release");
-          LDBG("create ConsumerRelease annotation on SubtiledRegionOp "
+          auto tileToken = subtiled.addInputToTileBody(token.second);
+          auto tileBufIdx = subtiled.addInputToTileBody(bufferIdx);
+          OpBuilder tileBuilder(insertTarget);
+          tileBuilder.setInsertionPointAfter(insertTarget);
+          ttnvws::ConsumerReleaseOp::create(tileBuilder, insertTarget->getLoc(),
+                                            tileToken, tileBufIdx);
+          LDBG("create inline ConsumerRelease in SubtiledRegionOp "
                << masterChannel->uniqID << " ");
         } else {
           builder.setLoopScheduleInfoFromOp(consumerReleasePoint);
@@ -4462,8 +4350,6 @@ void doCodePartition(triton::FuncOp &funcOp, unsigned numBuffers) {
         multiTaskOps.push_back(op);
     });
     for (auto op : multiTaskOps)
-      lowerTokenAnnotations(op);
-    for (auto op : multiTaskOps)
       ttng::lowerSubtiledRegion(op);
   }
 
@@ -4711,8 +4597,6 @@ void doCodePartitionPost(triton::FuncOp &funcOp, unsigned numBuffers) {
       if (taskIds.size() > 1)
         multiTaskOps.push_back(op);
     });
-    for (auto op : multiTaskOps)
-      lowerTokenAnnotations(op);
     for (auto op : multiTaskOps)
       ttng::lowerSubtiledRegion(op);
   }

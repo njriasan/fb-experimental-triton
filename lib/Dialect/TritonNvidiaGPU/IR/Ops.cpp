@@ -1330,31 +1330,12 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
     p << ")";
   }
 
-  // Print tokenValues
-  if (!getTokenValues().empty()) {
-    p << " token_values(";
-    llvm::interleaveComma(getTokenValues(), p,
-                          [&](Value v) { p.printOperand(v); });
-    p << " : ";
-    llvm::interleaveComma(getTokenValues().getTypes(), p,
-                          [&](Type t) { p.printType(t); });
-    p << ")";
-  }
-
   // Print tileMappings
   p << " tile_mappings = ";
   p.printAttribute(getTileMappings());
 
-  // Print tokenAnnotations
-  if (!getTokenAnnotations().empty()) {
-    p << " token_annotations = ";
-    p.printAttribute(getTokenAnnotations());
-  }
-
-  // Print attr-dict (excluding our custom attrs and operand segment sizes)
-  p.printOptionalAttrDict(
-      (*this)->getAttrs(),
-      {"tileMappings", "tokenAnnotations", getOperandSegmentSizeAttr()});
+  // Print attr-dict (excluding our custom attrs)
+  p.printOptionalAttrDict((*this)->getAttrs(), {"tileMappings"});
 
   // Print setup region (with block args from inputs)
   p << " setup";
@@ -1380,20 +1361,11 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
                                     OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand> inputOperands;
   SmallVector<Type> inputTypes;
-  SmallVector<OpAsmParser::UnresolvedOperand> tokenOperands;
-  SmallVector<Type> tokenTypes;
 
   // Parse optional inputs(...)
   if (succeeded(parser.parseOptionalKeyword("inputs"))) {
     if (parser.parseLParen() || parser.parseOperandList(inputOperands) ||
         parser.parseColonTypeList(inputTypes) || parser.parseRParen())
-      return failure();
-  }
-
-  // Parse optional token_values(...)
-  if (succeeded(parser.parseOptionalKeyword("token_values"))) {
-    if (parser.parseLParen() || parser.parseOperandList(tokenOperands) ||
-        parser.parseColonTypeList(tokenTypes) || parser.parseRParen())
       return failure();
   }
 
@@ -1404,33 +1376,14 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
     return failure();
   result.addAttribute("tileMappings", tileMappingsAttr);
 
-  // Parse optional token_annotations = <attr>
-  if (succeeded(parser.parseOptionalKeyword("token_annotations"))) {
-    Attribute tokenAnnotationsAttr;
-    if (parser.parseEqual() || parser.parseAttribute(tokenAnnotationsAttr))
-      return failure();
-    result.addAttribute("tokenAnnotations", tokenAnnotationsAttr);
-  } else {
-    result.addAttribute("tokenAnnotations",
-                        parser.getBuilder().getArrayAttr({}));
-  }
-
   // Parse optional attr-dict
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Resolve operands (inputs first, then tokenValues)
+  // Resolve operands
   if (parser.resolveOperands(inputOperands, inputTypes,
-                             parser.getCurrentLocation(), result.operands) ||
-      parser.resolveOperands(tokenOperands, tokenTypes,
                              parser.getCurrentLocation(), result.operands))
     return failure();
-
-  // Set operand segment sizes (inputs, tokenValues)
-  result.addAttribute(SubtiledRegionOp::getOperandSegmentSizeAttr(),
-                      parser.getBuilder().getDenseI32ArrayAttr(
-                          {static_cast<int32_t>(inputOperands.size()),
-                           static_cast<int32_t>(tokenOperands.size())}));
 
   // Parse setup region (with block args from inputs)
   if (parser.parseKeyword("setup"))

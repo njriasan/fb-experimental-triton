@@ -656,7 +656,6 @@ static void buildSingleSubtiledRegionN(
   for (auto &mapping : tileMappings)
     mappingAttrs.push_back(DenseI32ArrayAttr::get(ctx, mapping));
   auto tileMappingsAttr = builder.getArrayAttr(mappingAttrs);
-  auto tokenAnnotationsAttr = builder.getArrayAttr({});
 
   // Collect all outer values that the setup yield needs as inputs.
   SmallVector<Value> outerValues;
@@ -685,9 +684,8 @@ static void buildSingleSubtiledRegionN(
   for (Value v : sharedOperands)
     getOrAddInput(v);
 
-  auto regionOp = SubtiledRegionOp::create(
-      builder, loc, TypeRange{}, outerValues, ValueRange{}, tileMappingsAttr,
-      tokenAnnotationsAttr);
+  auto regionOp = SubtiledRegionOp::create(builder, loc, TypeRange{},
+                                           outerValues, tileMappingsAttr);
 
   // Propagate async_task_id from the chain ops so that code partition
   // does not prune the SubtiledRegionOp as untagged.
@@ -1010,7 +1008,6 @@ static bool buildMultiTaskSubtiledRegionsN(
     for (auto &m : tileMaps)
       mapAttrs.push_back(DenseI32ArrayAttr::get(ctx, m));
     auto tileMappingsAttr = outerBuilder.getArrayAttr(mapAttrs);
-    auto tokenAnnotationsAttr = outerBuilder.getArrayAttr({});
 
     // Collect outer values for IsolatedFromAbove.
     // Only values defined outside setupOps need to be inputs.
@@ -1054,9 +1051,8 @@ static bool buildMultiTaskSubtiledRegionsN(
     for (Value v : sharedOperands)
       getOrAdd(v);
 
-    auto regionOp = SubtiledRegionOp::create(
-        outerBuilder, loc, TypeRange{}, outerVals, ValueRange{},
-        tileMappingsAttr, tokenAnnotationsAttr);
+    auto regionOp = SubtiledRegionOp::create(outerBuilder, loc, TypeRange{},
+                                             outerVals, tileMappingsAttr);
 
     // --- Setup Region ---
     Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();

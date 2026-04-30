@@ -23,21 +23,19 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK-LABEL: @subtiled_smem_channel
   // CHECK: ttg.warp_specialize
   //
-  // Partition 0 (epilogue): SubtiledRegionOp with producer token annotations
+  // Partition 0 (epilogue): SubtiledRegionOp with inline producer ops
   // CHECK: partition0
   // CHECK:   ttng.subtiled_region
-  // CHECK-SAME: token_annotations
-  // CHECK-SAME: producer_acquire
-  // CHECK-SAME: producer_commit
+  // CHECK:     nvws.producer_acquire
   // CHECK:     ttg.local_store
+  // CHECK:     nvws.producer_commit
   //
-  // Partition 1 (store): SubtiledRegionOp with consumer token annotations
+  // Partition 1 (store): SubtiledRegionOp with inline consumer ops
   // CHECK: partition1
   // CHECK:   ttng.subtiled_region
-  // CHECK-SAME: token_annotations
-  // CHECK-SAME: consumer_wait
-  // CHECK-SAME: consumer_release
+  // CHECK:     nvws.consumer_wait
   // CHECK:     ttng.async_tma_copy_local_to_global
+  // CHECK:     nvws.consumer_release
   tt.func @subtiled_smem_channel(
       %desc: !tt.tensordesc<tensor<128x64xf16, #shared>>,
       %off0: i32, %off1: i32, %off2: i32,

@@ -5,7 +5,6 @@
 #include <set>
 
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "nvidia/include/Dialect/NVWS/IR/Dialect.h"
 #include "triton/Analysis/Utility.h"
@@ -260,7 +259,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
       // We need bufferFullArray and bufferEmptyArray.
       if (auto op = dyn_cast<ttnvws::ProducerAcquireOp>(user)) {
         Value bufferEmpty = extractBufferEmpty(loc, op.getIdx());
-        auto pOp = user->getParentOp();
         assert(user->hasAttr("async_task_id"));
         setAsyncTaskIds(bufferEmpty.getDefiningOp(), getAsyncTaskIds(user));
         processProducerAcquireOp(builder, op, bufferEmpty);
@@ -288,95 +286,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         processConsumerReleaseOp(builder, op, bufferEmpty, numCTAs,
                                  bufferEmptyCount);
         deprecatedOps.push_back(user);
-        return true;
-      } else if (auto op = dyn_cast<ttng::SubtiledRegionOp>(user)) {
-        Value tokenVal = createTokenOp.getResult();
-        SmallVector<unsigned> tokenIndices;
-        for (unsigned i = 0; i < op.getTokenValues().size(); ++i) {
-          Value tv = op.getTokenValues()[i];
-          if (tv == tokenVal || blockArgToToken.lookup(tv) == tokenVal)
-            tokenIndices.push_back(i);
-        }
-        if (tokenIndices.empty())
-          return false;
-
-        // Build side-effect index → op map before modifying the tile body.
-        Block &tileBlock = op.getTileRegion().front();
-        DenseMap<unsigned, Operation *> idToOp;
-        unsigned sideEffectIdx = 0;
-        for (Operation &tileOp : tileBlock.without_terminator()) {
-          if (!mlir::isMemoryEffectFree(&tileOp))
-            idToOp[sideEffectIdx++] = &tileOp;
-        }
-
-        SmallVector<Attribute> remainingTokenAnnotations;
-
-        // Resolve each annotation: create barrier values outside the
-        // SubtiledRegionOp, thread them into the tile body, and insert
-        // barrier ops at the target position inside the tile body.
-        for (Attribute attr : op.getTokenAnnotations()) {
-          auto annotation = cast<ttng::TokenAnnotationAttr>(attr);
-          bool matchesToken =
-              llvm::is_contained(tokenIndices, annotation.getTokenIdx());
-          if (!matchesToken) {
-            remainingTokenAnnotations.push_back(attr);
-            continue;
-          }
-
-          StringRef kind = annotation.getTokenOpKind().getValue();
-          Value idx = op.getTokenValues()[annotation.getBufferIdxIdx()];
-          bool isWait = (kind == "producer_acquire" || kind == "consumer_wait");
-          bool useEmpty =
-              (kind == "producer_acquire" || kind == "consumer_release");
-
-          // Create barrier memdesc outside the SubtiledRegionOp.
-          Value barrier = useEmpty ? extractBufferEmpty(loc, idx)
-                                   : extractBufferFull(loc, idx);
-          BlockArgument tileBarrier = op.addInputToTileBody(barrier);
-
-          // For wait ops, compute the phase outside and thread it in.
-          BlockArgument tilePhase;
-          if (isWait) {
-            OpBuilder phaseBuilder(op);
-            int phaseIdx = annotation.getPhaseIdx();
-            Value phase;
-            if (phaseIdx >= 0) {
-              Value phaseVal = op.getTokenValues()[phaseIdx];
-              phase = arith::ExtUIOp::create(
-                  phaseBuilder, loc, phaseBuilder.getI32Type(), phaseVal);
-            } else {
-              phase = arith::ConstantOp::create(
-                  phaseBuilder, loc, phaseBuilder.getI32IntegerAttr(0));
-            }
-            tilePhase = op.addInputToTileBody(phase);
-          }
-
-          // Find the target op in the tile body.
-          auto it = idToOp.find(annotation.getTargetOpIdx());
-          assert(it != idToOp.end() && "targetOpIdx not found in tile body");
-          Operation *targetOp = it->second;
-
-          // Insert barrier op inside the tile body.
-          OpBuilder tileBuilder(op->getContext());
-          if (annotation.getPlacement() == ttng::BarrierPlacement::BEFORE)
-            tileBuilder.setInsertionPoint(targetOp);
-          else
-            tileBuilder.setInsertionPointAfter(targetOp);
-
-          if (isWait) {
-            ttng::WaitBarrierOp::create(tileBuilder, loc, tileBarrier,
-                                        tilePhase);
-          } else {
-            unsigned count = useEmpty ? std::max(1u, bufferEmptyCount)
-                                      : std::max(1u, bufferFullCount);
-            ttng::ArriveBarrierOp::create(tileBuilder, loc, tileBarrier, count);
-          }
-        }
-
-        op.setTokenAnnotationsAttr(
-            ArrayAttr::get(op.getContext(), remainingTokenAnnotations));
-        if (remainingTokenAnnotations.empty())
-          op.getTokenValuesMutable().assign(ValueRange{});
         return true;
       } else if (auto op = dyn_cast<ttng::TMAStoreTokenWaitOp>(user)) {
         Value truePred = arith::ConstantIntOp::create(builder, loc, 1, 1);
@@ -445,12 +354,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
           for (Region &region : wsOp.getPartitionRegions()) {
             LDBG("-- region " << region.getNumArguments());
             auto tArg = region.getArgument(opndNum);
-            for (Operation *tUser : tArg.getUsers()) {
-              LLVM_DEBUG({
-                LDBG("user for arg");
-                tUser->dump();
-              });
-            }
             region.eraseArgument(opndNum);
             BlockArgument arg =
                 region.addArgument(full.getType(), full.getLoc());
