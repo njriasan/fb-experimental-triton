@@ -298,8 +298,7 @@ public:
     {
       namespace ttng = triton::nvidia_gpu;
       SmallVector<ttng::SubtiledRegionOp> remaining;
-      funcOp.walk(
-          [&](ttng::SubtiledRegionOp op) { remaining.push_back(op); });
+      funcOp.walk([&](ttng::SubtiledRegionOp op) { remaining.push_back(op); });
       for (auto op : remaining)
         ttng::lowerSubtiledRegion(op);
     }
