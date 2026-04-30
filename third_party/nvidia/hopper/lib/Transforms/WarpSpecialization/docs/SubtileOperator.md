@@ -104,7 +104,9 @@ This pass serves dual purposes:
    - `pushTmemLoadsToTile` — moves per-tile `tmem_load` chains from setup
      into tile body, interleaving loads with compute
    - `pushSharedSetupToTile` — sinks "shared" tile arguments (uniform across
-     tiles) into the tile body
+     tiles) into the tile body. Only constants defined inside setup can be
+     pushed; pass-through input args stay as tile args (IsolatedFromAbove
+     prevents referencing the original input from inside the tile body)
 
 The push logic lives in `PushSharedSetupToTile.cpp` and is exposed via the
 `pushSubtiledRegionSetupToTile()` entry point declared in `Dialect.h`.
@@ -189,12 +191,17 @@ so they're accessible inside the tile body despite `IsolatedFromAbove`.
 
 | Test file | Coverage |
 |-----------|----------|
-| `test/TritonNvidiaGPU/lower_subtiled_region.mlir` | 13 LIT tests for lowering |
+| `test/TritonNvidiaGPU/lower_subtiled_region.mlir` | Basic lowering, inline barriers, tile index, teardown results |
+| `test/TritonNvidiaGPU/lower_subtiled_region_barriers.mlir` | Lowering with inline wait/arrive barrier ops in tile body |
+| `test/TritonNvidiaGPU/generate_subtiled_region_dp1.mlir` | DP=1 epilogue subtiling |
 | `test/TritonNvidiaGPU/generate_subtiled_region_multi_task.mlir` | Multi-task, identity, addmm patterns |
 | `test/TritonNvidiaGPU/generate_subtiled_region_ntile.mlir` | 4-tile, 8-tile nested splits |
 | `test/TritonNvidiaGPU/generate_subtiled_region_tmem_split.mlir` | tmem_subslice + push-to-tile optimization |
 | `test/TritonNvidiaGPU/push_shared_setup_to_tile.mlir` | Setup-to-tile push transformations |
+| `test/TritonNvidiaGPU/ops.mlir` | Round-trip parse/print |
 | `test/TritonNvidiaGPU/invalid.mlir` | Verifier error cases |
+| `test/Hopper/WarpSpecialization/ws_token_lowering_subtiled_region.mlir` | Token lowering with SubtiledRegionOps inside warp_specialize |
+| `test/Hopper/WarpSpecialization/ws_code_partition_subtiled_region.mlir` | Code partition with SMEM channels between SubtiledRegionOps |
 | `python/test/unit/language/test_tutorial09_warp_specialization.py` | Blackwell GEMM e2e (parametrized with `generate_subtiled_region`) |
 | `python/test/unit/language/test_autows_addmm.py` | Addmm e2e (parametrized with `generate_subtiled_region`) |
 | `test_subtile_gemm.py` | Standalone addmm + subtile e2e |
