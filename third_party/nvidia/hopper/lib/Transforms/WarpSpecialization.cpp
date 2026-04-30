@@ -53,10 +53,10 @@ void doGenerateSubtiledRegion(triton::FuncOp &funcOp) {
   pm.addPass(triton::nvidia_gpu::
                  createTritonNvidiaGPUTestGenerateSubtiledRegionPass());
   // OptimizeTMemLayouts and PushSharedSetupToTile are deferred: they run
-  // later via the main add_optimize_tmem_layouts invocation in compiler.py,
-  // followed by add_lower_subtiled_region.  This avoids transforming bare
-  // (non-SubtiledRegionOp) splits into tmem_subslice ops that lack
-  // async_task_id and would crash createChannelPost.
+  // later via the main add_optimize_tmem_layouts invocation in compiler.py.
+  // This avoids transforming bare (non-SubtiledRegionOp) splits into
+  // tmem_subslice ops that lack async_task_id and would crash
+  // createChannelPost.
   (void)pm.run(moduleOp);
 }
 

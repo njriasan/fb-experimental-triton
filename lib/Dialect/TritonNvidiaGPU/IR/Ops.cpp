@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
@@ -1152,6 +1153,63 @@ void TMEMSubSliceOp::build(OpBuilder &builder, OperationState &state,
 }
 
 // -- SubtiledRegionOp --
+void lowerSubtiledRegion(SubtiledRegionOp op) {
+  OpBuilder builder(op);
+  Location loc = op.getLoc();
+
+  Block &setupBlock = op.getSetupRegion().front();
+  IRMapping setupMapping;
+  for (auto [blockArg, input] :
+       llvm::zip(setupBlock.getArguments(), op.getInputs()))
+    setupMapping.map(blockArg, input);
+  for (Operation &setupOp : setupBlock.without_terminator())
+    builder.clone(setupOp, setupMapping);
+
+  auto yieldOp = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
+  SmallVector<Value> setupOutputs;
+  for (Value v : yieldOp.getResults())
+    setupOutputs.push_back(setupMapping.lookupOrDefault(v));
+
+  ArrayAttr tileMappings = op.getTileMappings();
+  unsigned numTiles = tileMappings.size();
+  Block &tileBlock = op.getTileRegion().front();
+
+  unsigned numTileArgs = tileBlock.getNumArguments();
+  unsigned mappingSize =
+      cast<DenseI32ArrayAttr>(tileMappings[0]).asArrayRef().size();
+  bool hasTileIndex = (numTileArgs == mappingSize + 1);
+
+  for (unsigned tileIdx = 0; tileIdx < numTiles; ++tileIdx) {
+    auto indices = cast<DenseI32ArrayAttr>(tileMappings[tileIdx]);
+    IRMapping tileMapping;
+
+    for (auto [j, idx] : llvm::enumerate(indices.asArrayRef()))
+      tileMapping.map(tileBlock.getArgument(j), setupOutputs[idx]);
+
+    if (hasTileIndex) {
+      Value tileIdxConst = arith::ConstantOp::create(
+          builder, loc, builder.getI32IntegerAttr(tileIdx));
+      tileMapping.map(tileBlock.getArgument(numTileArgs - 1), tileIdxConst);
+    }
+
+    for (Operation &tileOp : tileBlock.without_terminator())
+      builder.clone(tileOp, tileMapping);
+  }
+
+  Block &teardownBlock = op.getTeardownRegion().front();
+  IRMapping teardownMapping;
+  for (Operation &teardownOp : teardownBlock.without_terminator())
+    builder.clone(teardownOp, teardownMapping);
+
+  auto teardownTerminator =
+      cast<SubtiledRegionYieldOp>(teardownBlock.getTerminator());
+  for (auto [opResult, teardownVal] :
+       llvm::zip(op.getResults(), teardownTerminator.getResults()))
+    opResult.replaceAllUsesWith(teardownMapping.lookupOrDefault(teardownVal));
+
+  op.erase();
+}
+
 BlockArgument SubtiledRegionOp::addInputToTileBody(Value value) {
   MLIRContext *ctx = getContext();
   Block &setupBlock = getSetupRegion().front();
@@ -1311,8 +1369,7 @@ LogicalResult SubtiledRegionOp::verify() {
     } else if (attr.asArrayRef() != firstTaskIds.asArrayRef()) {
       return emitOpError("tile body has mixed async_task_id: ")
              << attr << " vs " << firstTaskIds
-             << "; multi-task SubtiledRegionOps must be lowered before "
-                "reaching LowerSubtiledRegionPass";
+             << "; multi-task SubtiledRegionOps must be lowered first";
     }
   }
 

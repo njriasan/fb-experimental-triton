@@ -111,23 +111,18 @@ This pass serves dual purposes:
 The push logic lives in `PushSharedSetupToTile.cpp` and is exposed via the
 `pushSubtiledRegionSetupToTile()` entry point declared in `Dialect.h`.
 
-#### 3. LowerSubtiledRegion
-**File:** `lib/Dialect/TritonNvidiaGPU/Transforms/LowerSubtiledRegion.cpp`
-**Pass:** `triton-nvidia-gpu-lower-subtiled-region`
+#### 3. Lowering (`lowerSubtiledRegion`)
+**File:** `lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp`
 
-Expands each `SubtiledRegionOp` into flat IR:
-1. Inlines setup ops
-2. Replicates tile body N times with value substitution from tile mappings
-3. Inlines teardown ops
-
-Also exported as a public function `lowerSubtiledRegion(SubtiledRegionOp)`
-for use by other passes (e.g., WSCodePartition for multi-task fallback).
+`lowerSubtiledRegion(SubtiledRegionOp)` expands a SubtiledRegionOp into flat
+IR: inlines setup, replicates the tile body N times with value substitution
+from tile mappings, and inlines teardown. Called from:
+- `WarpSpecialization.cpp` — inlines SubtiledRegionOps with NVWS ops before
+  doTokenLowering
+- `WSCodePartition.cpp` — inlines multi-task SubtiledRegionOps before
+  specializeRegion
 
 ### Pipeline Integration
-
-The subtile pipeline spans two compilation phases: the WS mega-pass generates
-and annotates the SubtiledRegionOps, then the main TTGIR pipeline optimizes
-and lowers them.
 
 **Inside `NVGPUWarpSpecialization` pass** (`WarpSpecialization.cpp`):
 
@@ -136,13 +131,14 @@ doTaskIdPropagate
 doBufferAllocation
 doHoistLoopInvariantTMEMStore
 doMemoryPlanner
-doGenerateSubtiledRegion          ← only runs GenerateSubtiledRegion pass
+doGenerateSubtiledRegion          ← creates SubtiledRegionOps
 doAnnotateTMAStoreWaits
 doValidateTMAStoreAnnotations
-doCodePartitionPost               ← adds token annotations on SubtiledRegionOps;
+doCodePartitionPost               ← creates inline NVWS ops in SubtiledRegionOps;
                                     multi-task SubtiledRegionOps lowered here
-doTokenLowering                   ← resolves tokens → inline barrier ops
-scheduleLoops                       (SubtiledRegionOps survive with inline barriers)
+lowerSubtiledRegion (NVWS)        ← inlines SubtiledRegionOps with NVWS ops
+doTokenLowering                   ← resolves NVWS ops → hardware barrier ops
+scheduleLoops
 ```
 
 **In the main TTGIR pipeline** (`compiler.py`), after the WS pass:
@@ -151,24 +147,13 @@ scheduleLoops                       (SubtiledRegionOps survive with inline barri
 ...
 add_optimize_tmem_layouts         ← pattern rewrites (split → tmem_subslice)
                                     + pushSubtiledRegionSetupToTile()
-add_lower_subtiled_region         ← expands tile bodies
 add_tma_lowering
 ...
 ```
 
-This separation is critical: `doGenerateSubtiledRegion` only creates the
-SubtiledRegionOps (no tmem optimization, no setup push). The SubtiledRegionOps
-survive through the WS pass where token annotations are resolved to inline
-barrier ops. Only after the WS pass completes does `add_optimize_tmem_layouts`
-transform the setup chains (both inside SubtiledRegionOps and bare splits
-elsewhere), and `add_lower_subtiled_region` expands the tile bodies.
-
-This avoids the earlier problem where `OptimizeTMemLayouts` ran inside
-`doGenerateSubtiledRegion` and transformed bare (non-SubtiledRegionOp) splits
-into `tmem_subslice` ops lacking `async_task_id`, crashing `createChannelPost`.
-
-Multi-task SubtiledRegionOps (tile body spanning multiple tasks) are still
-lowered as a fallback inside `doCodePartitionPost` before `specializeRegion`.
+Remaining SubtiledRegionOps (without NVWS ops) survive through
+`add_optimize_tmem_layouts` where setup chains are optimized, then are
+lowered by the next pass that walks them.
 
 ### Compiler Option
 
@@ -191,8 +176,6 @@ so they're accessible inside the tile body despite `IsolatedFromAbove`.
 
 | Test file | Coverage |
 |-----------|----------|
-| `test/TritonNvidiaGPU/lower_subtiled_region.mlir` | Basic lowering, inline barriers, tile index, teardown results |
-| `test/TritonNvidiaGPU/lower_subtiled_region_barriers.mlir` | Lowering with inline wait/arrive barrier ops in tile body |
 | `test/TritonNvidiaGPU/generate_subtiled_region_dp1.mlir` | DP=1 epilogue subtiling |
 | `test/TritonNvidiaGPU/generate_subtiled_region_multi_task.mlir` | Multi-task, identity, addmm patterns |
 | `test/TritonNvidiaGPU/generate_subtiled_region_ntile.mlir` | 4-tile, 8-tile nested splits |
