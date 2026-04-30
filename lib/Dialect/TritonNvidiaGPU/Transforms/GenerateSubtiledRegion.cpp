@@ -771,11 +771,6 @@ static void buildSingleSubtiledRegionN(
   for (Operation *op : tplChain)
     tileBuilder.clone(*op, tileMapping);
   SubtiledRegionYieldOp::create(tileBuilder, loc, ValueRange{});
-
-  // --- Teardown Region ---
-  Block *teardownBlock = &regionOp.getTeardownRegion().emplaceBlock();
-  OpBuilder teardownBuilder = OpBuilder::atBlockEnd(teardownBlock);
-  SubtiledRegionYieldOp::create(teardownBuilder, loc, ValueRange{});
 }
 
 /// Create a mutable MemDescType with a trivial shared encoding for buffering
@@ -1146,11 +1141,6 @@ static bool buildMultiTaskSubtiledRegionsN(
       }
     }
     SubtiledRegionYieldOp::create(tileBuilder, loc, ValueRange{});
-
-    // --- Teardown Region ---
-    Block *teardownBlock = &regionOp.getTeardownRegion().emplaceBlock();
-    OpBuilder teardownBuilder = OpBuilder::atBlockEnd(teardownBlock);
-    SubtiledRegionYieldOp::create(teardownBuilder, loc, ValueRange{});
   }
   return true;
 }

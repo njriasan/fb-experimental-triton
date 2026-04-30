@@ -1137,16 +1137,14 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     explicitly via `inputs`. The setup region receives these as block
     arguments, in the same order as `inputs`.
 
-    The op has three regions:
+    The op has two regions:
     - `setupRegion`: receives `inputs` as block arguments. Computes subtile
       values (e.g. tmem_subslice + tmem_load, constants). Terminated by
       `subtiled_region_yield`.
     - `tileRegion`: per-tile body that is replicated during lowering. Block
       arguments are substituted from setup outputs via `tileMappings`.
-      Terminated by `subtiled_region_yield`.
-    - `teardownRegion`: runs once after all tiles are processed (e.g. final
-      reductions, epilogue barriers for FA). Terminated by
-      `subtiled_region_yield` which yields the op's results.
+      Terminated by `subtiled_region_yield` which optionally yields per-tile
+      results.
 
     `tileMappings` is an array of arrays: one per tile, each entry is an index
     into the setup yield values. The length of each inner array must equal the
@@ -1154,6 +1152,10 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     one if the tile region has an extra trailing `i32` block argument for the
     tile index. When present, the tile index argument is substituted with the
     concrete tile index (0, 1, ...) during lowering.
+
+    If the tile body yields M values, the op produces `numTiles * M` results,
+    grouped by yield position: for each yield position j, one result per tile
+    in tile order. This matches the argument order of `tt.join`.
   }];
 
   let arguments = (ins
@@ -1165,8 +1167,7 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
 
   let regions = (region
     SizedRegion<1>:$setupRegion,
-    SizedRegion<1>:$tileRegion,
-    SizedRegion<1>:$teardownRegion
+    SizedRegion<1>:$tileRegion
   );
 
   let extraClassDeclaration = [{
@@ -1194,8 +1195,7 @@ def TTNG_SubtiledRegionYieldOp : TTNG_Op<"subtiled_region_yield", [
     Terminates any region of a `subtiled_region` op.
     - In the setup region, the yielded values are referenced by the tile
       mappings to provide arguments to each tile replication.
-    - In the tile region, no values are yielded.
-    - In the teardown region, the yielded values become the results of the
+    - In the tile region, the yielded values become per-tile results of the
       enclosing `subtiled_region` op.
   }];
 

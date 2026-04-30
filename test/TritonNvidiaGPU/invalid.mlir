@@ -196,8 +196,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         ttng.subtiled_region_yield %c0 : f32
       } tile(%arg0: f32) {
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
       }
     tt.return
   }
@@ -219,8 +217,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         %c1 = arith.constant 1 : i32
         ttng.subtiled_region_yield %c0, %c1 : i32, i32
       } tile(%arg0: i32, %arg1: i32) {
-        ttng.subtiled_region_yield
-      } teardown {
         ttng.subtiled_region_yield
       }
     tt.return
@@ -244,8 +240,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         ttng.subtiled_region_yield %c0, %c1 : i32, i32
       } tile(%arg0: i32) {
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
       }
     tt.return
   }
@@ -267,32 +261,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         ttng.subtiled_region_yield %c0 : i32
       } tile(%arg0: f32) {
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
-      }
-    tt.return
-  }
-}
-
-// -----
-
-// Verify: teardown result count mismatch
-#shared2 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_teardown_result_mismatch(
-      %bar: !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>,
-      %accum_cnt: i64) {
-    // expected-error @+1 {{teardown yields 1 values but op has 0 results}}
-    ttng.subtiled_region
-        tile_mappings = [array<i32: 0>]
-      setup {
-        %c0 = arith.constant 0 : i32
-        ttng.subtiled_region_yield %c0 : i32
-      } tile(%arg0: i32) {
-        ttng.subtiled_region_yield
-      } teardown {
-        %c42 = arith.constant 42 : i32
-        ttng.subtiled_region_yield %c42 : i32
       }
     tt.return
   }
@@ -313,8 +281,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         %a = arith.index_cast %arg0 {async_task_id = array<i32: 3>} : i32 to index
         %b = arith.index_cast %arg0 {async_task_id = array<i32: 4>} : i32 to index
         %c = arith.index_cast %arg0 {async_task_id = array<i32: 3>} : i32 to index
-        ttng.subtiled_region_yield
-      } teardown {
         ttng.subtiled_region_yield
       }
     tt.return

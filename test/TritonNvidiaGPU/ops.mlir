@@ -106,8 +106,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     // CHECK: ttng.subtiled_region_yield
     // CHECK: tile
     // CHECK: ttng.subtiled_region_yield
-    // CHECK: teardown
-    // CHECK: ttng.subtiled_region_yield
     ttng.subtiled_region
         tile_mappings = [array<i32: 0>, array<i32: 1>]
       setup {
@@ -117,9 +115,29 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
       } tile(%arg0: i32) {
         %res = arith.addi %arg0, %arg0 : i32
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
       }
+    tt.return
+  }
+
+  // CHECK-LABEL: @subtiled_region_with_results
+  tt.func @subtiled_region_with_results() {
+    // Per-tile yields produce numTiles * numYields results.
+    // 2 tiles, 1 yield each → 2 results.
+    // CHECK: %[[R:.*]]:2 = ttng.subtiled_region
+    // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
+    // CHECK: tile
+    // CHECK: ttng.subtiled_region_yield %{{.*}} : i32
+    // CHECK: -> (i32, i32)
+    %r0, %r1 = ttng.subtiled_region
+        tile_mappings = [array<i32: 0>, array<i32: 1>]
+      setup {
+        %c3 = arith.constant 3 : i32
+        %c5 = arith.constant 5 : i32
+        ttng.subtiled_region_yield %c3, %c5 : i32, i32
+      } tile(%arg0: i32) {
+        %res = arith.addi %arg0, %arg0 : i32
+        ttng.subtiled_region_yield %res : i32
+      } -> (i32, i32)
     tt.return
   }
 }

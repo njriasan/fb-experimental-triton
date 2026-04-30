@@ -1179,6 +1179,12 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
       cast<DenseI32ArrayAttr>(tileMappings[0]).asArrayRef().size();
   bool hasTileIndex = (numTileArgs == mappingSize + 1);
 
+  auto tileYield = cast<SubtiledRegionYieldOp>(tileBlock.getTerminator());
+  unsigned numTileYields = tileYield.getResults().size();
+
+  // perTileResults[yieldPos][tileIdx] = the cloned yield value for that tile.
+  SmallVector<SmallVector<Value>> perTileResults(numTileYields);
+
   for (unsigned tileIdx = 0; tileIdx < numTiles; ++tileIdx) {
     auto indices = cast<DenseI32ArrayAttr>(tileMappings[tileIdx]);
     IRMapping tileMapping;
@@ -1194,18 +1200,17 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
 
     for (Operation &tileOp : tileBlock.without_terminator())
       builder.clone(tileOp, tileMapping);
+
+    for (unsigned j = 0; j < numTileYields; ++j)
+      perTileResults[j].push_back(
+          tileMapping.lookupOrDefault(tileYield.getResults()[j]));
   }
 
-  Block &teardownBlock = op.getTeardownRegion().front();
-  IRMapping teardownMapping;
-  for (Operation &teardownOp : teardownBlock.without_terminator())
-    builder.clone(teardownOp, teardownMapping);
-
-  auto teardownTerminator =
-      cast<SubtiledRegionYieldOp>(teardownBlock.getTerminator());
-  for (auto [opResult, teardownVal] :
-       llvm::zip(op.getResults(), teardownTerminator.getResults()))
-    opResult.replaceAllUsesWith(teardownMapping.lookupOrDefault(teardownVal));
+  // Results are grouped by yield position: for yield j, one result per tile.
+  unsigned resultIdx = 0;
+  for (unsigned j = 0; j < numTileYields; ++j)
+    for (unsigned t = 0; t < numTiles; ++t)
+      op.getResult(resultIdx++).replaceAllUsesWith(perTileResults[j][t]);
 
   op.erase();
 }
@@ -1277,33 +1282,34 @@ LogicalResult SubtiledRegionOp::verify() {
     return emitOpError("tile region must terminate with "
                        "'ttng.subtiled_region_yield'");
 
-  // 3. Teardown region terminates with SubtiledRegionYieldOp
-  auto &teardownBlock = getTeardownRegion().front();
-  if (!isa<SubtiledRegionYieldOp>(teardownBlock.getTerminator()))
-    return emitOpError("teardown region must terminate with "
-                       "'ttng.subtiled_region_yield'");
-
-  // 4. Teardown results must match op results
-  auto teardownOp = cast<SubtiledRegionYieldOp>(teardownBlock.getTerminator());
-  if (teardownOp.getResults().size() != getNumResults())
-    return emitOpError("teardown yields ")
-           << teardownOp.getResults().size() << " values but op has "
+  // 3. Tile yield count * numTiles must match op result count.
+  auto tileYield = cast<SubtiledRegionYieldOp>(tileBlock.getTerminator());
+  unsigned numTileYields = tileYield.getResults().size();
+  ArrayAttr tileMappings = getTileMappings();
+  unsigned numTiles = tileMappings.size();
+  if (numTileYields * numTiles != getNumResults())
+    return emitOpError("tile yields ")
+           << numTileYields << " values * " << numTiles
+           << " tiles = " << numTileYields * numTiles << " but op has "
            << getNumResults() << " results";
-  for (auto [i, pair] :
-       llvm::enumerate(llvm::zip(teardownOp.getResults(), getResults()))) {
-    auto [teardownVal, opResult] = pair;
-    if (teardownVal.getType() != opResult.getType())
-      return emitOpError("teardown result ")
-             << i << " has type " << teardownVal.getType()
-             << " but op result has type " << opResult.getType();
+
+  // 4. Result types must match tile yield types (repeated per tile).
+  for (unsigned j = 0; j < numTileYields; ++j) {
+    Type yieldType = tileYield.getResults()[j].getType();
+    for (unsigned t = 0; t < numTiles; ++t) {
+      unsigned resultIdx = j * numTiles + t;
+      if (getResult(resultIdx).getType() != yieldType)
+        return emitOpError("result ")
+               << resultIdx << " has type " << getResult(resultIdx).getType()
+               << " but tile yield " << j << " has type " << yieldType;
+    }
   }
 
   auto yieldOp = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
   unsigned numSetupOutputs = yieldOp.getResults().size();
   unsigned numTileArgs = tileBlock.getNumArguments();
 
-  // 5. tileMappings is non-empty
-  ArrayAttr tileMappings = getTileMappings();
+  // 5. tileMappings is non-empty (already fetched above)
   if (tileMappings.empty())
     return emitOpError("tileMappings must have at least one tile");
 
@@ -1402,10 +1408,6 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
   p << " tile";
   p.printRegion(getTileRegion(), /*printEntryBlockArgs=*/true);
 
-  // Print teardown region
-  p << " teardown ";
-  p.printRegion(getTeardownRegion(), /*printEntryBlockArgs=*/false);
-
   // Print result types if any
   if (getNumResults() > 0) {
     p << " -> (";
@@ -1458,13 +1460,6 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
     return failure();
   Region *tileRegion = result.addRegion();
   if (parser.parseRegion(*tileRegion, tileArgs))
-    return failure();
-
-  // Parse teardown region
-  if (parser.parseKeyword("teardown"))
-    return failure();
-  Region *teardownRegion = result.addRegion();
-  if (parser.parseRegion(*teardownRegion))
     return failure();
 
   // Parse optional result types: -> (type, ...)

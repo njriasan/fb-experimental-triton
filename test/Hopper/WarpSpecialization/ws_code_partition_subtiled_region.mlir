@@ -76,8 +76,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
           ttg.local_store %trunc, %t1 {async_task_id = array<i32: 1>}
             : tensor<128x64xf16, #linear> -> !ttg.memdesc<128x64xf16, #shared, #smem, mutable>
           ttng.subtiled_region_yield
-        } teardown {
-          ttng.subtiled_region_yield
         }
 
       // TMA store SubtiledRegionOp (task 2): async_tma_copy
@@ -107,8 +105,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
             {async_task_id = array<i32: 2>}
             : !tt.tensordesc<tensor<128x64xf16, #shared>>,
               !ttg.memdesc<128x64xf16, #shared, #smem, mutable>
-          ttng.subtiled_region_yield
-        } teardown {
           ttng.subtiled_region_yield
         }
     } {async_task_id = array<i32: 0, 1, 2>, tt.warp_specialize,

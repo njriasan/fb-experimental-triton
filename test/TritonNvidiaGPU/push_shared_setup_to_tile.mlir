@@ -32,8 +32,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       } tile(%arg0: i32, %arg1: i32) {
         %sum = arith.addi %arg0, %arg1 : i32
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
       }
     tt.return
   }
@@ -71,8 +69,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       } tile(%arg0: i32, %arg1: i32) {
         %sum = arith.addi %arg0, %arg1 : i32
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
       }
     tt.return
   }
@@ -99,8 +95,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         ttng.subtiled_region_yield %c0, %c1 : i32, i32
       } tile(%arg0: i32) {
         %idx = arith.index_cast %arg0 : i32 to index
-        ttng.subtiled_region_yield
-      } teardown {
         ttng.subtiled_region_yield
       }
     tt.return
@@ -137,8 +131,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
         ttng.subtiled_region_yield %c0, %c128, %shared : i32, i32, i32
       } tile(%arg0: i32, %arg1: i32) {
         %prod = arith.muli %arg0, %arg1 : i32
-        ttng.subtiled_region_yield
-      } teardown {
         ttng.subtiled_region_yield
       }
     tt.return
@@ -192,8 +184,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       } tile(%arg0: tensor<128x64xf32, #blocked6>, %arg1: tensor<128x64xf32, #blocked6>, %nOff: i32) {
         %trunc = arith.truncf %arg1 : tensor<128x64xf32, #blocked6> to tensor<128x64xf16, #blocked6>
         ttng.subtiled_region_yield
-      } teardown {
-        ttng.subtiled_region_yield
       }
     tt.return
   }
@@ -226,8 +216,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       } tile(%arg0: i32, %arg1: i32) {
         %prod = arith.muli %arg0, %arg0 : i32
         %sum = arith.addi %prod, %arg1 : i32
-        ttng.subtiled_region_yield
-      } teardown {
         ttng.subtiled_region_yield
       }
     tt.return
