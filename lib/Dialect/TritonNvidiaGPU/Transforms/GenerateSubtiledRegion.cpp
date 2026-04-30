@@ -570,53 +570,53 @@ static void buildSingleSubtiledRegionN(
   unsigned numTiles = leafValues.size();
   auto &differing = equiv.differingOperands;
   ArrayRef<Operation *> tplChain = chains[equiv.templateChainIdx];
+  bool hasMixedIdentity = !equiv.identityPerTile.empty();
 
-  // Tile arg types and per-tile mappings.
+  // --- Collect per-tile operands (grouped by position) ---
+  SmallVector<Value> perTileOps;
   SmallVector<Type> tileArgTypes;
-  SmallVector<SmallVector<int32_t>> tileMappings(numTiles);
 
-  // Tile arg 0: the leaf split result (same type for all tiles).
+  // Position 0: leaf values.
+  for (Value leaf : leafValues)
+    perTileOps.push_back(leaf);
   tileArgTypes.push_back(leafValues[0].getType());
-  for (unsigned t = 0; t < numTiles; ++t)
-    tileMappings[t].push_back(t); // yield slot t → tile t's leaf value
 
-  // Differing operands: one tile arg per differing position.
-  unsigned yieldIdx = numTiles;
+  // Differing operands: one per-tile position per differing slot.
   for (auto &perTile : differing) {
+    for (Value v : perTile)
+      perTileOps.push_back(v);
     tileArgTypes.push_back(perTile[0].getType());
-    for (unsigned t = 0; t < numTiles; ++t) {
-      tileMappings[t].push_back(yieldIdx + t);
-    }
-    yieldIdx += numTiles;
   }
 
-  // Identity insertions: one tile arg per identity op.
-  // When identityPerTile is populated (mixed identity — some tiles have
-  // the op, others don't), yield N values per identity op (one per tile).
-  // Otherwise, yield 2 values (varying + identity_const).
-  bool hasMixedIdentity = !equiv.identityPerTile.empty();
+  // Identity operands: one per-tile position per identity op.
   for (auto [i, id] : llvm::enumerate(equiv.identityOps)) {
-    tileArgTypes.push_back(id.varyingOperand.getType());
     if (hasMixedIdentity) {
-      for (unsigned t = 0; t < numTiles; ++t)
-        tileMappings[t].push_back(yieldIdx + t);
-      yieldIdx += numTiles;
+      for (unsigned t = 0; t < numTiles; ++t) {
+        Value v = equiv.identityPerTile[i][t];
+        if (v) {
+          perTileOps.push_back(v);
+        } else {
+          perTileOps.push_back(arith::ConstantOp::create(
+              builder, loc,
+              builder.getIntegerAttr(id.varyingOperand.getType(),
+                                     id.identityVal)));
+        }
+      }
     } else {
-      unsigned varyingSlot = yieldIdx;
-      unsigned constSlot = yieldIdx + 1;
+      Value identityConst = arith::ConstantOp::create(
+          builder, loc,
+          builder.getIntegerAttr(id.varyingOperand.getType(), id.identityVal));
       for (unsigned t = 0; t < numTiles; ++t) {
         if (t == equiv.templateChainIdx)
-          tileMappings[t].push_back(varyingSlot);
+          perTileOps.push_back(id.varyingOperand);
         else
-          tileMappings[t].push_back(constSlot);
+          perTileOps.push_back(identityConst);
       }
-      yieldIdx += 2;
     }
+    tileArgTypes.push_back(id.varyingOperand.getType());
   }
 
-  // Detect "shared" operands — values used by template chain ops that
-  // are defined outside the chain and are the same across all tiles.
-  // These need tile args too, so the tile body doesn't capture them.
+  // --- Collect shared operands ---
   DenseSet<Value> chainResults;
   for (Operation *op : tplChain)
     for (Value r : op->getResults())
@@ -629,7 +629,7 @@ static void buildSingleSubtiledRegionN(
   for (auto &id : equiv.identityOps)
     alreadyMapped.insert(id.varyingOperand);
 
-  SmallVector<Value> sharedOperands;
+  SmallVector<Value> sharedOps;
   DenseSet<Value> seenShared;
   for (Operation *op : tplChain) {
     for (Value operand : op->getOperands()) {
@@ -639,56 +639,15 @@ static void buildSingleSubtiledRegionN(
         continue;
       if (!seenShared.insert(operand).second)
         continue;
-      sharedOperands.push_back(operand);
+      sharedOps.push_back(operand);
     }
   }
 
-  // Add shared operands as tile args: each maps to the same yield slot
-  // for all tiles (shared, not per-tile).
-  for (Value v : sharedOperands) {
-    tileArgTypes.push_back(v.getType());
-    for (unsigned t = 0; t < numTiles; ++t)
-      tileMappings[t].push_back(yieldIdx);
-    yieldIdx += 1; // one yield slot, shared across all tiles
-  }
+  // --- Create the op ---
+  auto regionOp = SubtiledRegionOp::create(
+      builder, loc, TypeRange{}, perTileOps, sharedOps,
+      builder.getI32IntegerAttr(numTiles));
 
-  SmallVector<Attribute> mappingAttrs;
-  for (auto &mapping : tileMappings)
-    mappingAttrs.push_back(DenseI32ArrayAttr::get(ctx, mapping));
-  auto tileMappingsAttr = builder.getArrayAttr(mappingAttrs);
-
-  // Collect all outer values that the setup yield needs as inputs.
-  SmallVector<Value> outerValues;
-  DenseMap<Value, unsigned> outerValueIdx;
-  auto getOrAddInput = [&](Value v) -> unsigned {
-    auto [it, inserted] = outerValueIdx.try_emplace(v, outerValues.size());
-    if (inserted)
-      outerValues.push_back(v);
-    return it->second;
-  };
-
-  for (Value leaf : leafValues)
-    getOrAddInput(leaf);
-  for (auto &perTile : differing)
-    for (Value v : perTile)
-      getOrAddInput(v);
-  if (!equiv.identityPerTile.empty()) {
-    for (auto [i, id] : llvm::enumerate(equiv.identityOps))
-      for (unsigned t = 0; t < numTiles; ++t)
-        if (equiv.identityPerTile[i][t])
-          getOrAddInput(equiv.identityPerTile[i][t]);
-  } else {
-    for (auto &id : equiv.identityOps)
-      getOrAddInput(id.varyingOperand);
-  }
-  for (Value v : sharedOperands)
-    getOrAddInput(v);
-
-  auto regionOp = SubtiledRegionOp::create(builder, loc, TypeRange{},
-                                           outerValues, tileMappingsAttr);
-
-  // Propagate async_task_id from the chain ops so that code partition
-  // does not prune the SubtiledRegionOp as untagged.
   for (Operation *op : tplChain) {
     auto taskIds = getOpAsyncTaskIds(op);
     if (!taskIds.empty()) {
@@ -697,66 +656,19 @@ static void buildSingleSubtiledRegionN(
     }
   }
 
-  // --- Setup Region ---
-  // The setup region receives all outer values as block arguments
-  // (IsolatedFromAbove). The yield references these block args.
-  Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
-  for (Value v : outerValues)
-    setupBlock->addArgument(v.getType(), loc);
-  OpBuilder setupBuilder = OpBuilder::atBlockEnd(setupBlock);
-
-  SmallVector<Value> setupYieldValues;
-  // Yield the N leaf values via block args.
-  for (Value leaf : leafValues)
-    setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[leaf]));
-  // Yield N-way differing operands.
-  for (auto &perTile : differing)
-    for (Value v : perTile)
-      setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[v]));
-  // Yield identity insertion operands.
-  if (!equiv.identityPerTile.empty()) {
-    for (auto [i, id] : llvm::enumerate(equiv.identityOps)) {
-      for (unsigned t = 0; t < numTiles; ++t) {
-        Value v = equiv.identityPerTile[i][t];
-        if (v)
-          setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[v]));
-        else
-          setupYieldValues.push_back(arith::ConstantOp::create(
-              setupBuilder, loc,
-              setupBuilder.getIntegerAttr(id.varyingOperand.getType(),
-                                          id.identityVal)));
-      }
-    }
-  } else {
-    for (auto &id : equiv.identityOps) {
-      Value identityConst = arith::ConstantOp::create(
-          setupBuilder, loc,
-          setupBuilder.getIntegerAttr(id.varyingOperand.getType(),
-                                      id.identityVal));
-      setupYieldValues.push_back(
-          setupBlock->getArgument(outerValueIdx[id.varyingOperand]));
-      setupYieldValues.push_back(identityConst);
-    }
-  }
-  // Yield shared operands (one yield slot per shared operand, same for
-  // all tiles).
-  for (Value v : sharedOperands)
-    setupYieldValues.push_back(setupBlock->getArgument(outerValueIdx[v]));
-  SubtiledRegionYieldOp::create(setupBuilder, loc, setupYieldValues);
-
   // --- Tile Region ---
   Block *tileBlock = &regionOp.getTileRegion().emplaceBlock();
   for (Type ty : tileArgTypes)
     tileBlock->addArgument(ty, loc);
+  for (Value v : sharedOps)
+    tileBlock->addArgument(v.getType(), loc);
   tileBlock->addArgument(builder.getI32Type(), loc); // tile index
 
   OpBuilder tileBuilder = OpBuilder::atBlockEnd(tileBlock);
   IRMapping tileMapping;
-  // Map template chain's leaf value to tile arg 0.
   Value tplLeaf = leafValues[equiv.templateChainIdx];
   tileMapping.map(tplLeaf, tileBlock->getArgument(0));
   unsigned argIdx = 1;
-  // Map differing operands.
   for (auto &perTile : differing) {
     Value tplVal = perTile[equiv.templateChainIdx];
     tileMapping.map(tplVal, tileBlock->getArgument(argIdx++));
@@ -764,8 +676,7 @@ static void buildSingleSubtiledRegionN(
   // Map identity operands.
   for (auto &id : equiv.identityOps)
     tileMapping.map(id.varyingOperand, tileBlock->getArgument(argIdx++));
-  // Map shared operands.
-  for (Value v : sharedOperands)
+  for (Value v : sharedOps)
     tileMapping.map(v, tileBlock->getArgument(argIdx++));
 
   for (Operation *op : tplChain)
