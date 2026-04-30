@@ -293,6 +293,17 @@ public:
       llvm::dbgs() << "\n\n\n";
     }
 
+    // Lower all remaining SubtiledRegionOps into flat IR before
+    // TMA store wait reordering operates on the flat loop body.
+    {
+      namespace ttng = triton::nvidia_gpu;
+      SmallVector<ttng::SubtiledRegionOp> remaining;
+      funcOp.walk(
+          [&](ttng::SubtiledRegionOp op) { remaining.push_back(op); });
+      for (auto op : remaining)
+        ttng::lowerSubtiledRegion(op);
+    }
+
     doTMAStoreWaitReorder(funcOp);
     if (dumpIntermediateSteps) {
       llvm::dbgs() << "// -----// WarpSpec internal IR Dump After: "

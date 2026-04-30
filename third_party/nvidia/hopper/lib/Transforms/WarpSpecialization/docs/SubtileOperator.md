@@ -137,21 +137,14 @@ doCodePartitionPost               ← creates inline NVWS ops in SubtiledRegionO
 lowerSubtiledRegion (NVWS)        ← inlines SubtiledRegionOps with NVWS ops
 doTokenLowering                   ← resolves NVWS ops → hardware barrier ops
 scheduleLoops
+lowerSubtiledRegion (remaining)   ← inlines all surviving SubtiledRegionOps
+doTMAStoreWaitReorder
 ```
 
-**In the main TTGIR pipeline** (`compiler.py`), after the WS pass:
-
-```
-...
-add_optimize_tmem_layouts         ← pattern rewrites (split → tmem_subslice)
-                                    + pushSubtiledRegionSetupToTile()
-                                    + lowerSubtiledRegion (all remaining)
-add_tma_lowering
-...
-```
-
-All remaining SubtiledRegionOps are lowered at the end of
-`add_optimize_tmem_layouts`, after setup push is complete.
+All SubtiledRegionOps are lowered inside the WS pass. The main TTGIR
+pipeline (`compiler.py`) runs `add_optimize_tmem_layouts` (which pushes
+setup to tile via `pushSubtiledRegionSetupToTile`) but no longer needs
+a separate lowering step — that happens before `doTMAStoreWaitReorder`.
 
 ### Compiler Option
 
