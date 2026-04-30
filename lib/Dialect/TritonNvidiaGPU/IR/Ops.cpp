@@ -1157,44 +1157,29 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   OpBuilder builder(op);
   Location loc = op.getLoc();
 
-  Block &setupBlock = op.getSetupRegion().front();
-  IRMapping setupMapping;
-  for (auto [blockArg, input] :
-       llvm::zip(setupBlock.getArguments(), op.getInputs()))
-    setupMapping.map(blockArg, input);
-  for (Operation &setupOp : setupBlock.without_terminator())
-    builder.clone(setupOp, setupMapping);
-
-  auto yieldOp = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
-  SmallVector<Value> setupOutputs;
-  for (Value v : yieldOp.getResults())
-    setupOutputs.push_back(setupMapping.lookupOrDefault(v));
-
-  ArrayAttr tileMappings = op.getTileMappings();
-  unsigned numTiles = tileMappings.size();
+  unsigned nTiles = op.getNumTiles();
   Block &tileBlock = op.getTileRegion().front();
-
+  unsigned numPerTile = op.getNumPerTilePositions();
+  unsigned numShared = op.getSharedArgs().size();
   unsigned numTileArgs = tileBlock.getNumArguments();
-  unsigned mappingSize =
-      cast<DenseI32ArrayAttr>(tileMappings[0]).asArrayRef().size();
-  bool hasTileIndex = (numTileArgs == mappingSize + 1);
+  bool hasTileIndex =
+      (numTileArgs == numPerTile + numShared + 1);
 
   auto tileYield = cast<SubtiledRegionYieldOp>(tileBlock.getTerminator());
   unsigned numTileYields = tileYield.getResults().size();
-
-  // perTileResults[yieldPos][tileIdx] = the cloned yield value for that tile.
   SmallVector<SmallVector<Value>> perTileResults(numTileYields);
 
-  for (unsigned tileIdx = 0; tileIdx < numTiles; ++tileIdx) {
-    auto indices = cast<DenseI32ArrayAttr>(tileMappings[tileIdx]);
+  for (unsigned t = 0; t < nTiles; ++t) {
     IRMapping tileMapping;
-
-    for (auto [j, idx] : llvm::enumerate(indices.asArrayRef()))
-      tileMapping.map(tileBlock.getArgument(j), setupOutputs[idx]);
-
+    for (unsigned j = 0; j < numPerTile; ++j)
+      tileMapping.map(tileBlock.getArgument(j),
+                      op.getPerTileArgs()[j * nTiles + t]);
+    for (unsigned j = 0; j < numShared; ++j)
+      tileMapping.map(tileBlock.getArgument(numPerTile + j),
+                      op.getSharedArgs()[j]);
     if (hasTileIndex) {
       Value tileIdxConst = arith::ConstantOp::create(
-          builder, loc, builder.getI32IntegerAttr(tileIdx));
+          builder, loc, builder.getI32IntegerAttr(t));
       tileMapping.map(tileBlock.getArgument(numTileArgs - 1), tileIdxConst);
     }
 
@@ -1206,77 +1191,40 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
           tileMapping.lookupOrDefault(tileYield.getResults()[j]));
   }
 
-  // Results are grouped by yield position: for yield j, one result per tile.
   unsigned resultIdx = 0;
   for (unsigned j = 0; j < numTileYields; ++j)
-    for (unsigned t = 0; t < numTiles; ++t)
+    for (unsigned t = 0; t < nTiles; ++t)
       op.getResult(resultIdx++).replaceAllUsesWith(perTileResults[j][t]);
 
   op.erase();
 }
 
-BlockArgument SubtiledRegionOp::addInputToTileBody(Value value) {
-  MLIRContext *ctx = getContext();
-  Block &setupBlock = getSetupRegion().front();
+BlockArgument SubtiledRegionOp::addSharedArg(Value value) {
   Block &tileBlock = getTileRegion().front();
+  unsigned numPerTile = getNumPerTilePositions();
+  unsigned numShared = getSharedArgs().size();
+  bool hasTileIndex =
+      (tileBlock.getNumArguments() == numPerTile + numShared + 1);
 
-  // Detect tile index arg before any modifications.
-  unsigned oldMappingSize =
-      cast<DenseI32ArrayAttr>(getTileMappings()[0]).asArrayRef().size();
-  bool hasTileIndex = (tileBlock.getNumArguments() == oldMappingSize + 1);
+  getSharedArgsMutable().append(value);
 
-  // 1. Add to inputs.
-  getInputsMutable().append(value);
-
-  // 2. Add setup block argument.
-  BlockArgument setupArg = setupBlock.addArgument(value.getType(), getLoc());
-
-  // 3. Extend setup yield.
-  auto setupYield = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
-  SmallVector<Value> yieldVals(setupYield.getResults());
-  unsigned yieldIdx = yieldVals.size();
-  yieldVals.push_back(setupArg);
-  OpBuilder yieldBuilder(setupYield);
-  SubtiledRegionYieldOp::create(yieldBuilder, setupYield.getLoc(), yieldVals);
-  setupYield.erase();
-
-  // 4. Extend tile mappings — all tiles map to the same setup yield index.
-  SmallVector<Attribute> newMappings;
-  for (Attribute mapping : getTileMappings()) {
-    SmallVector<int32_t> indices(cast<DenseI32ArrayAttr>(mapping).asArrayRef());
-    indices.push_back(static_cast<int32_t>(yieldIdx));
-    newMappings.push_back(DenseI32ArrayAttr::get(ctx, indices));
-  }
-  setTileMappingsAttr(ArrayAttr::get(ctx, newMappings));
-
-  // 5. Add tile block argument (before tile index if present).
   unsigned insertPos = hasTileIndex ? tileBlock.getNumArguments() - 1
                                     : tileBlock.getNumArguments();
   return tileBlock.insertArgument(insertPos, value.getType(), getLoc());
 }
 
 LogicalResult SubtiledRegionOp::verify() {
-  // 0. Setup block arguments must match inputs (IsolatedFromAbove).
-  auto &setupBlock = getSetupRegion().front();
-  if (setupBlock.getNumArguments() != getInputs().size())
-    return emitOpError("setup region has ")
-           << setupBlock.getNumArguments() << " block arguments but op has "
-           << getInputs().size() << " inputs";
-  for (auto [i, pair] :
-       llvm::enumerate(llvm::zip(setupBlock.getArguments(), getInputs()))) {
-    auto [blockArg, input] = pair;
-    if (blockArg.getType() != input.getType())
-      return emitOpError("setup block arg ")
-             << i << " has type " << blockArg.getType()
-             << " but input has type " << input.getType();
-  }
+  unsigned nTiles = getNumTiles();
+  if (nTiles == 0)
+    return emitOpError("numTiles must be at least 1");
 
-  // 1. Setup region terminates with SubtiledRegionYieldOp
-  if (!isa<SubtiledRegionYieldOp>(setupBlock.getTerminator()))
-    return emitOpError("setup region must terminate with "
-                       "'ttng.subtiled_region_yield'");
+  // 1. perTileArgs size must be divisible by numTiles.
+  if (getPerTileArgs().size() % nTiles != 0)
+    return emitOpError("perTileArgs has ")
+           << getPerTileArgs().size()
+           << " operands which is not divisible by numTiles=" << nTiles;
 
-  // 2. Tile region terminates with SubtiledRegionYieldOp
+  // 2. Tile region terminates with SubtiledRegionYieldOp.
   auto &tileBlock = getTileRegion().front();
   if (!isa<SubtiledRegionYieldOp>(tileBlock.getTerminator()))
     return emitOpError("tile region must terminate with "
@@ -1285,19 +1233,17 @@ LogicalResult SubtiledRegionOp::verify() {
   // 3. Tile yield count * numTiles must match op result count.
   auto tileYield = cast<SubtiledRegionYieldOp>(tileBlock.getTerminator());
   unsigned numTileYields = tileYield.getResults().size();
-  ArrayAttr tileMappings = getTileMappings();
-  unsigned numTiles = tileMappings.size();
-  if (numTileYields * numTiles != getNumResults())
+  if (numTileYields * nTiles != getNumResults())
     return emitOpError("tile yields ")
-           << numTileYields << " values * " << numTiles
-           << " tiles = " << numTileYields * numTiles << " but op has "
+           << numTileYields << " values * " << nTiles
+           << " tiles = " << numTileYields * nTiles << " but op has "
            << getNumResults() << " results";
 
   // 4. Result types must match tile yield types (repeated per tile).
   for (unsigned j = 0; j < numTileYields; ++j) {
     Type yieldType = tileYield.getResults()[j].getType();
-    for (unsigned t = 0; t < numTiles; ++t) {
-      unsigned resultIdx = j * numTiles + t;
+    for (unsigned t = 0; t < nTiles; ++t) {
+      unsigned resultIdx = j * nTiles + t;
       if (getResult(resultIdx).getType() != yieldType)
         return emitOpError("result ")
                << resultIdx << " has type " << getResult(resultIdx).getType()
@@ -1305,56 +1251,19 @@ LogicalResult SubtiledRegionOp::verify() {
     }
   }
 
-  auto yieldOp = cast<SubtiledRegionYieldOp>(setupBlock.getTerminator());
-  unsigned numSetupOutputs = yieldOp.getResults().size();
+  // 5. Tile block arg count must match perTile + shared + optional tileIdx.
+  unsigned numPerTile = getNumPerTilePositions();
+  unsigned numShared = getSharedArgs().size();
   unsigned numTileArgs = tileBlock.getNumArguments();
+  if (numTileArgs != numPerTile + numShared &&
+      numTileArgs != numPerTile + numShared + 1)
+    return emitOpError("tile region has ")
+           << numTileArgs << " block arguments but expected "
+           << numPerTile + numShared << " or "
+           << numPerTile + numShared + 1 << " (with tile index)";
 
-  // 5. tileMappings is non-empty (already fetched above)
-  if (tileMappings.empty())
-    return emitOpError("tileMappings must have at least one tile");
-
-  // 6-8. Validate each tile mapping.
-  // The tile region may have an optional trailing i32 tile index argument,
-  // so tileMappings entries may have numTileArgs or numTileArgs-1 elements.
-  bool hasTileIndex = false;
-  for (auto [i, mapping] : llvm::enumerate(tileMappings)) {
-    auto indices = dyn_cast<DenseI32ArrayAttr>(mapping);
-    if (!indices)
-      return emitOpError("tileMappings[")
-             << i << "] must be a DenseI32ArrayAttr";
-
-    // 6. Inner array length = numTileArgs or numTileArgs-1 (tile index).
-    unsigned mappingSize = static_cast<unsigned>(indices.size());
-    if (mappingSize == numTileArgs) {
-      // No tile index arg.
-    } else if (mappingSize + 1 == numTileArgs) {
-      hasTileIndex = true;
-    } else {
-      return emitOpError("tileMappings[")
-             << i << "] has " << indices.size()
-             << " entries but tile region has " << numTileArgs
-             << " block arguments (expected " << numTileArgs << " or "
-             << numTileArgs - 1 << ")";
-    }
-
-    for (auto [j, idx] : llvm::enumerate(indices.asArrayRef())) {
-      // 7. Indices in range
-      if (idx < 0 || static_cast<unsigned>(idx) >= numSetupOutputs)
-        return emitOpError("tileMappings[")
-               << i << "][" << j << "] = " << idx << " is out of range [0, "
-               << numSetupOutputs << ")";
-
-      // 8. Types match
-      Type setupType = yieldOp.getResults()[idx].getType();
-      Type tileArgType = tileBlock.getArgument(j).getType();
-      if (setupType != tileArgType)
-        return emitOpError("type mismatch: setup output ")
-               << idx << " has type " << setupType << " but tile block arg "
-               << j << " has type " << tileArgType;
-    }
-  }
-
-  // Validate the tile index argument type if present.
+  // 6. Validate tile index type if present.
+  bool hasTileIndex = (numTileArgs == numPerTile + numShared + 1);
   if (hasTileIndex) {
     Type lastArgType = tileBlock.getArgument(numTileArgs - 1).getType();
     if (!lastArgType.isInteger(32))
@@ -1362,53 +1271,36 @@ LogicalResult SubtiledRegionOp::verify() {
              << lastArgType;
   }
 
-  // 9. All ops in the tile body must have the same async_task_id set.
-  // Multi-task SubtiledRegionOps must be lowered before reaching this
-  // point (they are handled as fallbacks in doCodePartitionPost).
-  DenseI32ArrayAttr firstTaskIds;
-  for (Operation &op : tileBlock.without_terminator()) {
-    auto attr = op.getAttrOfType<DenseI32ArrayAttr>("async_task_id");
-    if (!attr)
-      continue;
-    if (!firstTaskIds) {
-      firstTaskIds = attr;
-    } else if (attr.asArrayRef() != firstTaskIds.asArrayRef()) {
-      return emitOpError("tile body has mixed async_task_id: ")
-             << attr << " vs " << firstTaskIds
-             << "; multi-task SubtiledRegionOps must be lowered first";
-    }
-  }
-
   return success();
 }
 
 void SubtiledRegionOp::print(OpAsmPrinter &p) {
-  // Print inputs
-  if (!getInputs().empty()) {
-    p << " inputs(";
-    llvm::interleaveComma(getInputs(), p, [&](Value v) { p.printOperand(v); });
+  if (!getPerTileArgs().empty()) {
+    p << " per_tile(";
+    llvm::interleaveComma(getPerTileArgs(), p,
+                          [&](Value v) { p.printOperand(v); });
     p << " : ";
-    llvm::interleaveComma(getInputs().getTypes(), p,
+    llvm::interleaveComma(getPerTileArgs().getTypes(), p,
                           [&](Type t) { p.printType(t); });
     p << ")";
   }
 
-  // Print tileMappings
-  p << " tile_mappings = ";
-  p.printAttribute(getTileMappings());
+  if (!getSharedArgs().empty()) {
+    p << " shared(";
+    llvm::interleaveComma(getSharedArgs(), p,
+                          [&](Value v) { p.printOperand(v); });
+    p << " : ";
+    llvm::interleaveComma(getSharedArgs().getTypes(), p,
+                          [&](Type t) { p.printType(t); });
+    p << ")";
+  }
 
-  // Print attr-dict (excluding our custom attrs)
-  p.printOptionalAttrDict((*this)->getAttrs(), {"tileMappings"});
+  p.printOptionalAttrDict((*this)->getAttrs(),
+                          {getOperandSegmentSizeAttr()});
 
-  // Print setup region (with block args from inputs)
-  p << " setup";
-  p.printRegion(getSetupRegion(), /*printEntryBlockArgs=*/true);
-
-  // Print tile region with block args
   p << " tile";
   p.printRegion(getTileRegion(), /*printEntryBlockArgs=*/true);
 
-  // Print result types if any
   if (getNumResults() > 0) {
     p << " -> (";
     llvm::interleaveComma(getResultTypes(), p, [&](Type t) { p.printType(t); });
@@ -1418,40 +1310,38 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
 
 ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
                                     OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand> inputOperands;
-  SmallVector<Type> inputTypes;
+  SmallVector<OpAsmParser::UnresolvedOperand> perTileOperands;
+  SmallVector<Type> perTileTypes;
+  SmallVector<OpAsmParser::UnresolvedOperand> sharedOperands;
+  SmallVector<Type> sharedTypes;
 
-  // Parse optional inputs(...)
-  if (succeeded(parser.parseOptionalKeyword("inputs"))) {
-    if (parser.parseLParen() || parser.parseOperandList(inputOperands) ||
-        parser.parseColonTypeList(inputTypes) || parser.parseRParen())
+  if (succeeded(parser.parseOptionalKeyword("per_tile"))) {
+    if (parser.parseLParen() || parser.parseOperandList(perTileOperands) ||
+        parser.parseColonTypeList(perTileTypes) || parser.parseRParen())
       return failure();
   }
 
-  // Parse tile_mappings = <attr>
-  Attribute tileMappingsAttr;
-  if (parser.parseKeyword("tile_mappings") || parser.parseEqual() ||
-      parser.parseAttribute(tileMappingsAttr))
-    return failure();
-  result.addAttribute("tileMappings", tileMappingsAttr);
+  if (succeeded(parser.parseOptionalKeyword("shared"))) {
+    if (parser.parseLParen() || parser.parseOperandList(sharedOperands) ||
+        parser.parseColonTypeList(sharedTypes) || parser.parseRParen())
+      return failure();
+  }
 
-  // Parse optional attr-dict
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Resolve operands
-  if (parser.resolveOperands(inputOperands, inputTypes,
+  if (parser.resolveOperands(perTileOperands, perTileTypes,
+                             parser.getCurrentLocation(), result.operands) ||
+      parser.resolveOperands(sharedOperands, sharedTypes,
                              parser.getCurrentLocation(), result.operands))
     return failure();
 
-  // Parse setup region (with block args from inputs)
-  if (parser.parseKeyword("setup"))
-    return failure();
-  Region *setupRegion = result.addRegion();
-  if (parser.parseRegion(*setupRegion))
-    return failure();
+  result.addAttribute(
+      SubtiledRegionOp::getOperandSegmentSizeAttr(),
+      parser.getBuilder().getDenseI32ArrayAttr(
+          {static_cast<int32_t>(perTileOperands.size()),
+           static_cast<int32_t>(sharedOperands.size())}));
 
-  // Parse tile region with block arguments
   if (parser.parseKeyword("tile"))
     return failure();
   SmallVector<OpAsmParser::Argument> tileArgs;
@@ -1462,7 +1352,6 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
   if (parser.parseRegion(*tileRegion, tileArgs))
     return failure();
 
-  // Parse optional result types: -> (type, ...)
   if (succeeded(parser.parseOptionalArrow())) {
     SmallVector<Type> resultTypes;
     if (parser.parseLParen() || parser.parseTypeList(resultTypes) ||

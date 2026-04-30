@@ -1127,31 +1127,26 @@ def TTNG_PrefetchTensormapOp: TTNG_Op<
 
 def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
     IsolatedFromAbove,
-    RecursiveMemoryEffects
+    RecursiveMemoryEffects,
+    AttrSizedOperandSegments
 ]> {
   let summary = "Encapsulates a subtiling pattern for epilogue operations";
 
   let description = [{
     The `ttng.subtiled_region` operation is `IsolatedFromAbove`: all values
-    from the enclosing scope that are needed inside any region must be passed
-    explicitly via `inputs`. The setup region receives these as block
-    arguments, in the same order as `inputs`.
+    used in the tile body must be passed as `perTileArgs` or `sharedArgs`.
 
-    The op has two regions:
-    - `setupRegion`: receives `inputs` as block arguments. Computes subtile
-      values (e.g. tmem_subslice + tmem_load, constants). Terminated by
-      `subtiled_region_yield`.
-    - `tileRegion`: per-tile body that is replicated during lowering. Block
-      arguments are substituted from setup outputs via `tileMappings`.
-      Terminated by `subtiled_region_yield` which optionally yields per-tile
-      results.
+    - `perTileArgs`: `numTiles * K` operands grouped by position. For K
+      per-tile arg positions and N tiles, operands [j*N .. (j+1)*N) are
+      the values for position j across all tiles.
+    - `sharedArgs`: M operands broadcast identically to all tiles.
+    - `numTiles`: the number of tile replications during lowering.
 
-    `tileMappings` is an array of arrays: one per tile, each entry is an index
-    into the setup yield values. The length of each inner array must equal the
-    number of tile block arguments, or the number of tile block arguments minus
-    one if the tile region has an extra trailing `i32` block argument for the
-    tile index. When present, the tile index argument is substituted with the
-    concrete tile index (0, 1, ...) during lowering.
+    Tile block arguments are ordered:
+      [perTile0, ..., perTileK-1, shared0, ..., sharedM-1, tileIdx?]
+
+    The optional trailing `i32` tile index argument receives the concrete
+    tile index (0, 1, ...) during lowering.
 
     If the tile body yields M values, the op produces `numTiles * M` results,
     grouped by yield position: for each yield position j, one result per tile
@@ -1159,22 +1154,27 @@ def TTNG_SubtiledRegionOp : TTNG_Op<"subtiled_region", [
   }];
 
   let arguments = (ins
-    Variadic<AnyType>:$inputs,
-    ArrayAttr:$tileMappings
+    Variadic<AnyType>:$perTileArgs,
+    Variadic<AnyType>:$sharedArgs,
+    I32Attr:$numTiles
   );
 
   let results = (outs Variadic<AnyType>:$results);
 
   let regions = (region
-    SizedRegion<1>:$setupRegion,
     SizedRegion<1>:$tileRegion
   );
 
   let extraClassDeclaration = [{
-    /// Add `value` to inputs and thread it through setup -> tile body.
-    /// The value is yielded from setup and added to every tile's mapping.
+    /// Append a shared arg and add a corresponding tile block argument.
     /// Returns the new tile block argument.
-    BlockArgument addInputToTileBody(Value value);
+    BlockArgument addSharedArg(Value value);
+
+    /// Number of per-tile arg positions (K). Each position has numTiles
+    /// operands in perTileArgs.
+    unsigned getNumPerTilePositions() {
+      return getPerTileArgs().size() / getNumTiles();
+    }
   }];
 
   let hasCustomAssemblyFormat = 1;
@@ -1192,11 +1192,8 @@ def TTNG_SubtiledRegionYieldOp : TTNG_Op<"subtiled_region_yield", [
   let summary = "Terminate a region of subtiled_region and optionally yield values";
 
   let description = [{
-    Terminates any region of a `subtiled_region` op.
-    - In the setup region, the yielded values are referenced by the tile
-      mappings to provide arguments to each tile replication.
-    - In the tile region, the yielded values become per-tile results of the
-      enclosing `subtiled_region` op.
+    Terminates the tile region of a `subtiled_region` op. The yielded
+    values become per-tile results of the enclosing op.
   }];
 
   let arguments = (ins Variadic<AnyType>:$results);

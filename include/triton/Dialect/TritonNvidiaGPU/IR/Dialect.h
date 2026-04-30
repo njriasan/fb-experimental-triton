@@ -139,13 +139,9 @@ getDistributedLayoutForTmemLdSt(gpu::MemDescType memType, TMemAccessAtom atom,
                                 unsigned numWarps,
                                 gpu::CGAEncodingAttr cgaLayout);
 
-/// Lower a single SubtiledRegionOp into flat IR by inlining setup, tile,
-/// and teardown regions.
+/// Lower a single SubtiledRegionOp into flat IR by replicating the tile
+/// body for each tile.
 void lowerSubtiledRegion(SubtiledRegionOp op);
-
-/// Push shared setup ops into the tile body of a SubtiledRegionOp.
-/// Called from OptimizeTMemLayouts after tmem layout patterns have fired.
-void pushSubtiledRegionSetupToTile(SubtiledRegionOp op);
 
 } // namespace mlir::triton::nvidia_gpu
 

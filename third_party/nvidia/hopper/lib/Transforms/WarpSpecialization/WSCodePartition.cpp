@@ -3451,9 +3451,9 @@ void insertAsyncComm(
           auto annotTarget = getEnclosingSubtiledRegionTile(tmaHeadProducer)
                                  ? tmaHeadProducer
                                  : producerAcquirePoint;
-          auto tileToken = producerSubtiled.addInputToTileBody(token.second);
-          auto tileBufIdx = producerSubtiled.addInputToTileBody(bufferIdx);
-          auto tilePhase = producerSubtiled.addInputToTileBody(phase);
+          auto tileToken = producerSubtiled.addSharedArg(token.second);
+          auto tileBufIdx = producerSubtiled.addSharedArg(bufferIdx);
+          auto tilePhase = producerSubtiled.addSharedArg(phase);
           OpBuilder tileBuilder(annotTarget);
           tileBuilder.setInsertionPoint(annotTarget);
           ttnvws::ProducerAcquireOp::create(tileBuilder, annotTarget->getLoc(),
@@ -3604,8 +3604,8 @@ void insertAsyncComm(
           auto annotTarget = getEnclosingSubtiledRegionTile(tailProducer)
                                  ? tailProducer
                                  : producerCommitPoint;
-          auto tileToken = commitSubtiled.addInputToTileBody(token.second);
-          auto tileBufIdx = commitSubtiled.addInputToTileBody(bufferIdx);
+          auto tileToken = commitSubtiled.addSharedArg(token.second);
+          auto tileBufIdx = commitSubtiled.addSharedArg(bufferIdx);
           OpBuilder tileBuilder(annotTarget);
           tileBuilder.setInsertionPointAfter(annotTarget);
           ttnvws::ProducerCommitOp::create(tileBuilder, annotTarget->getLoc(),
@@ -3671,9 +3671,9 @@ void insertAsyncComm(
           } else {
             insertTarget = consumerWaitPoint;
           }
-          auto tileToken = subtiled.addInputToTileBody(token.second);
-          auto tileBufIdx = subtiled.addInputToTileBody(bufferIdx);
-          auto tilePhase = subtiled.addInputToTileBody(phase);
+          auto tileToken = subtiled.addSharedArg(token.second);
+          auto tileBufIdx = subtiled.addSharedArg(bufferIdx);
+          auto tilePhase = subtiled.addSharedArg(phase);
           OpBuilder tileBuilder(insertTarget);
           tileBuilder.setInsertionPoint(insertTarget);
           ttnvws::ConsumerWaitOp::create(tileBuilder, insertTarget->getLoc(),
@@ -3743,8 +3743,8 @@ void insertAsyncComm(
           } else {
             insertTarget = consumerReleasePoint;
           }
-          auto tileToken = subtiled.addInputToTileBody(token.second);
-          auto tileBufIdx = subtiled.addInputToTileBody(bufferIdx);
+          auto tileToken = subtiled.addSharedArg(token.second);
+          auto tileBufIdx = subtiled.addSharedArg(bufferIdx);
           OpBuilder tileBuilder(insertTarget);
           tileBuilder.setInsertionPointAfter(insertTarget);
           ttnvws::ConsumerReleaseOp::create(tileBuilder, insertTarget->getLoc(),

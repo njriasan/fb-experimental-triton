@@ -2714,39 +2714,40 @@ static void createChannelPost(Operation *allocOp, mlir::DominanceInfo &dom,
         assert(producerOp == nullptr);
         producerOp = user;
       } else if (auto subtiled = dyn_cast<ttng::SubtiledRegionOp>(user)) {
-        // The SMEM buffer is passed as an input to the SubtiledRegionOp.
-        // Look inside the tile region to classify as producer or consumer.
+        // The SMEM buffer is passed as a per-tile or shared arg.
+        // Look inside the tile body for a local_store that uses the
+        // corresponding block arg as destination.
         bool foundProducer = false;
         Block &tileBlock = subtiled.getTileRegion().front();
-        for (auto [inputIdx, input] : llvm::enumerate(subtiled.getInputs())) {
-          if (input != allocOp->getResult(0))
+        Value allocVal = allocOp->getResult(0);
+        // Check per-tile args and shared args for the alloc value.
+        for (auto [idx, arg] : llvm::enumerate(subtiled.getPerTileArgs())) {
+          if (arg != allocVal)
             continue;
-          Block &setupBlock = subtiled.getSetupRegion().front();
-          auto setupYield =
-              cast<ttng::SubtiledRegionYieldOp>(setupBlock.getTerminator());
-          BlockArgument setupArg = setupBlock.getArgument(inputIdx);
-          for (auto [yieldIdx, yieldVal] :
-               llvm::enumerate(setupYield.getResults())) {
-            if (yieldVal != setupArg)
-              continue;
-            for (auto &tileOp : tileBlock.without_terminator()) {
-              auto store = dyn_cast<ttg::LocalStoreOp>(&tileOp);
-              if (!store)
-                continue;
-              Value dst = store.getDst();
-              if (auto blockArg = dyn_cast<BlockArgument>(dst)) {
-                auto tileMappings = subtiled.getTileMappings();
-                for (auto mappingAttr : tileMappings) {
-                  auto mapping =
-                      cast<DenseI32ArrayAttr>(mappingAttr).asArrayRef();
-                  if (blockArg.getArgNumber() < mapping.size() &&
-                      static_cast<unsigned>(mapping[blockArg.getArgNumber()]) ==
-                          yieldIdx) {
-                    if (!producerOp)
-                      producerOp = &tileOp;
-                    foundProducer = true;
-                  }
-                }
+          unsigned nTiles = subtiled.getNumTiles();
+          unsigned pos = idx / nTiles;
+          BlockArgument tileArg = tileBlock.getArgument(pos);
+          for (auto &tileOp : tileBlock.without_terminator()) {
+            if (auto store = dyn_cast<ttg::LocalStoreOp>(&tileOp)) {
+              if (store.getDst() == tileArg) {
+                if (!producerOp)
+                  producerOp = &tileOp;
+                foundProducer = true;
+              }
+            }
+          }
+        }
+        unsigned numPerTile = subtiled.getNumPerTilePositions();
+        for (auto [idx, arg] : llvm::enumerate(subtiled.getSharedArgs())) {
+          if (arg != allocVal)
+            continue;
+          BlockArgument tileArg = tileBlock.getArgument(numPerTile + idx);
+          for (auto &tileOp : tileBlock.without_terminator()) {
+            if (auto store = dyn_cast<ttg::LocalStoreOp>(&tileOp)) {
+              if (store.getDst() == tileArg) {
+                if (!producerOp)
+                  producerOp = &tileOp;
+                foundProducer = true;
               }
             }
           }
