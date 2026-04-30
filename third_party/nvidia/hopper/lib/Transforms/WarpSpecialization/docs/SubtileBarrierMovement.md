@@ -5,34 +5,42 @@ barrier ops relative to the SubtiledRegionOp's tile body operations.
 
 ## Current placement
 
-`doTokenLowering` places barriers **outside** the SubtiledRegionOp:
+`doTokenLowering` places barriers **inside** the SubtiledRegionOp's tile
+body, threading barrier memdesc and phase values through `addInputToTileBody`
+(required by `IsolatedFromAbove`). Each tile replication gets its own copy
+of the barrier ops:
 
 ```
-wait_barrier(empty)          ← producer_acquire: before SubtiledRegionOp
 SubtiledRegionOp {
   setup { ... }
   tile {
+    wait_barrier(empty)      ← producer_acquire: inside tile body
     truncf → local_store     ← repeated N times by lowering
+    arrive_barrier(full)     ← producer_commit: inside tile body
   }
   teardown { ... }
 }
-arrive_barrier(full)         ← producer_commit: after SubtiledRegionOp
 ```
 
 After `LowerSubtiledRegionPass` expands the tiles, this becomes:
 
 ```
-wait_barrier(empty)
   [setup ops]
+  wait_barrier(empty)
   truncf0 → local_store0    ← tile 0
+  arrive_barrier(full)
+  wait_barrier(empty)
   truncf1 → local_store1    ← tile 1
+  arrive_barrier(full)
   ...
-  truncfN → local_storeN    ← tile N-1
   [teardown ops]
-arrive_barrier(full)
 ```
 
-All N stores complete before the arrive signals the consumer.
+Each tile has its own wait/arrive pair. With a single-buffered barrier
+(`numBuffers=1`) and the same phase for all tiles, this is functionally
+equivalent to the previous approach of wrapping all tiles with a single
+wait/arrive pair — but the IR structure now supports per-tile barrier
+customization.
 
 ---
 
@@ -244,18 +252,15 @@ produced in the setup region and the consumer doesn't need tile body results.
 
 ## Implications for the current design
 
-The current "barriers outside SubtiledRegionOp" approach is equivalent to
-the most conservative placement: wait before everything, arrive after
-everything. This is correct for any number of subtiles but sacrifices
-pipelining between subtiles.
+Barriers are now placed inside the tile body, so each tile replication gets
+its own wait/arrive pair. With `numBuffers=1` and a uniform phase, this is
+functionally equivalent to the old "barriers outside" approach.
 
-To enable per-subtile pipelining (Cases 1 and 2), the key changes would be:
+To enable per-subtile pipelining (Cases 1 and 2), the remaining changes
+would be:
 1. Increase `numBuffers` on the subtile token from 1 to N
-2. Place barriers inside the tile body (before/after each tile's ops)
-3. Handle per-subtile phase computation in the barrier ops
-4. Pre-arrive the empty barrier for all N phases on the first iteration
+2. Compute per-subtile phase using the tile index argument
+3. Pre-arrive the empty barrier for all N phases on the first iteration
 
-This is the "Option 1" approach discussed earlier. It requires passing
-barrier values through the SubtiledRegionOp's inputs (since
-IsolatedFromAbove prevents direct reference) and computing per-tile phases
-inside the tile body using the tile index argument.
+The infrastructure for placing barriers inside the tile body (via
+`addInputToTileBody`) and the tile index argument are already in place.

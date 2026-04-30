@@ -99,14 +99,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
   }
 
   // CHECK-LABEL: @subtiled_region
-  // CHECK-SAME: %[[BAR:arg[0-9]+]]: !ttg.memdesc<1xi64, #shared2, #smem, mutable>
-  // CHECK-SAME: %[[ACC:arg[0-9]+]]: i64
-  tt.func @subtiled_region(
-      %bar: !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>,
-      %accum_cnt: i64) {
+  tt.func @subtiled_region() {
     // CHECK: ttng.subtiled_region
-    // CHECK-SAME: barriers(%[[BAR]] : !ttg.memdesc<1xi64, #shared2, #smem, mutable>)
-    // CHECK-SAME: accum_cnts(%[[ACC]] : i64)
     // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>]
     // CHECK: setup
     // CHECK: ttng.subtiled_region_yield
@@ -115,8 +109,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     // CHECK: teardown
     // CHECK: ttng.subtiled_region_yield
     ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>)
-        accum_cnts(%accum_cnt : i64)
         tile_mappings = [array<i32: 0>, array<i32: 1>]
       setup {
         %c0 = arith.constant 0 : i32

@@ -1330,28 +1330,6 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
     p << ")";
   }
 
-  // Print barriers
-  if (!getBarriers().empty()) {
-    p << " barriers(";
-    llvm::interleaveComma(getBarriers(), p,
-                          [&](Value v) { p.printOperand(v); });
-    p << " : ";
-    llvm::interleaveComma(getBarriers().getTypes(), p,
-                          [&](Type t) { p.printType(t); });
-    p << ")";
-  }
-
-  // Print accumCnts
-  if (!getAccumCnts().empty()) {
-    p << " accum_cnts(";
-    llvm::interleaveComma(getAccumCnts(), p,
-                          [&](Value v) { p.printOperand(v); });
-    p << " : ";
-    llvm::interleaveComma(getAccumCnts().getTypes(), p,
-                          [&](Type t) { p.printType(t); });
-    p << ")";
-  }
-
   // Print tokenValues
   if (!getTokenValues().empty()) {
     p << " token_values(";
@@ -1402,10 +1380,6 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
                                     OperationState &result) {
   SmallVector<OpAsmParser::UnresolvedOperand> inputOperands;
   SmallVector<Type> inputTypes;
-  SmallVector<OpAsmParser::UnresolvedOperand> barrierOperands;
-  SmallVector<Type> barrierTypes;
-  SmallVector<OpAsmParser::UnresolvedOperand> phaseOperands;
-  SmallVector<Type> phaseTypes;
   SmallVector<OpAsmParser::UnresolvedOperand> tokenOperands;
   SmallVector<Type> tokenTypes;
 
@@ -1413,20 +1387,6 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
   if (succeeded(parser.parseOptionalKeyword("inputs"))) {
     if (parser.parseLParen() || parser.parseOperandList(inputOperands) ||
         parser.parseColonTypeList(inputTypes) || parser.parseRParen())
-      return failure();
-  }
-
-  // Parse optional barriers(...)
-  if (succeeded(parser.parseOptionalKeyword("barriers"))) {
-    if (parser.parseLParen() || parser.parseOperandList(barrierOperands) ||
-        parser.parseColonTypeList(barrierTypes) || parser.parseRParen())
-      return failure();
-  }
-
-  // Parse optional accum_cnts(...)
-  if (succeeded(parser.parseOptionalKeyword("accum_cnts"))) {
-    if (parser.parseLParen() || parser.parseOperandList(phaseOperands) ||
-        parser.parseColonTypeList(phaseTypes) || parser.parseRParen())
       return failure();
   }
 
@@ -1459,23 +1419,17 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
   if (parser.parseOptionalAttrDict(result.attributes))
     return failure();
 
-  // Resolve operands (inputs first, then barriers, accumCnts, tokenValues)
+  // Resolve operands (inputs first, then tokenValues)
   if (parser.resolveOperands(inputOperands, inputTypes,
-                             parser.getCurrentLocation(), result.operands) ||
-      parser.resolveOperands(barrierOperands, barrierTypes,
-                             parser.getCurrentLocation(), result.operands) ||
-      parser.resolveOperands(phaseOperands, phaseTypes,
                              parser.getCurrentLocation(), result.operands) ||
       parser.resolveOperands(tokenOperands, tokenTypes,
                              parser.getCurrentLocation(), result.operands))
     return failure();
 
-  // Set operand segment sizes (inputs, barriers, accumCnts, tokenValues)
+  // Set operand segment sizes (inputs, tokenValues)
   result.addAttribute(SubtiledRegionOp::getOperandSegmentSizeAttr(),
                       parser.getBuilder().getDenseI32ArrayAttr(
                           {static_cast<int32_t>(inputOperands.size()),
-                           static_cast<int32_t>(barrierOperands.size()),
-                           static_cast<int32_t>(phaseOperands.size()),
                            static_cast<int32_t>(tokenOperands.size())}));
 
   // Parse setup region (with block args from inputs)

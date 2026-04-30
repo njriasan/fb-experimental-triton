@@ -686,8 +686,8 @@ static void buildSingleSubtiledRegionN(
     getOrAddInput(v);
 
   auto regionOp = SubtiledRegionOp::create(
-      builder, loc, TypeRange{}, outerValues, ValueRange{}, ValueRange{},
-      ValueRange{}, tileMappingsAttr, tokenAnnotationsAttr);
+      builder, loc, TypeRange{}, outerValues, ValueRange{}, tileMappingsAttr,
+      tokenAnnotationsAttr);
 
   // Propagate async_task_id from the chain ops so that code partition
   // does not prune the SubtiledRegionOp as untagged.
@@ -1055,8 +1055,8 @@ static bool buildMultiTaskSubtiledRegionsN(
       getOrAdd(v);
 
     auto regionOp = SubtiledRegionOp::create(
-        outerBuilder, loc, TypeRange{}, outerVals, ValueRange{}, ValueRange{},
-        ValueRange{}, tileMappingsAttr, tokenAnnotationsAttr);
+        outerBuilder, loc, TypeRange{}, outerVals, ValueRange{},
+        tileMappingsAttr, tokenAnnotationsAttr);
 
     // --- Setup Region ---
     Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();

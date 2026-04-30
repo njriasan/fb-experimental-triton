@@ -14,22 +14,36 @@ copies of inlined code.
 
 ### Op Definition
 
-`SubtiledRegionOp` (`ttng.subtiled_region`) has three regions:
+`SubtiledRegionOp` (`ttng.subtiled_region`) is `IsolatedFromAbove`: all
+values from the enclosing scope must be passed explicitly via `inputs`.
+The setup region receives these as block arguments.
 
-- **setup**: Computes shared values (tmem_load → reshape → trans → split).
-  Terminated by `subtiled_region_yield` whose values are indexed by tile
-  mappings.
+It has three regions:
+
+- **setup**: Receives `inputs` as block arguments. Computes subtile values
+  (tmem_load → reshape → trans → split). Terminated by
+  `subtiled_region_yield` whose values are indexed by tile mappings.
 - **tile**: Per-tile body, replicated during lowering. Block arguments are
   substituted from setup outputs via `tileMappings`. An optional trailing
   i32 argument receives the tile index (0, 1, …).
 - **teardown**: Runs once after all tiles. Its yield values become the op's
   results.
 
+Key operands:
+- `inputs: Variadic<AnyType>` — all values captured from the enclosing scope
+- `tokenValues: Variadic<AnyType>` — NVWS token values for token annotations
+
 Key attributes:
 - `tileMappings: ArrayAttr` — one `DenseI32ArrayAttr` per tile mapping tile
   block args to setup yield indices
 - `tokenAnnotations: ArrayAttr` — NVWS token-layer annotations, resolved to
   inline barrier ops during token lowering
+
+Key methods:
+- `addInputToTileBody(Value)` — threads a value through inputs → setup yield
+  → tile mappings → tile block argument. Used by doTokenLowering and
+  lowerTokenAnnotations to make barrier values accessible inside the tile
+  body while respecting IsolatedFromAbove.
 
 Defined in `include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td`.
 
@@ -167,7 +181,9 @@ Default: `False`.
 
 `TokenAnnotationAttr` describes NVWS token-layer synchronization. During
 `doTokenLowering`, token annotations are resolved to inline
-`WaitBarrierOp`/`ArriveBarrierOp` ops placed inside the tile body.
+`WaitBarrierOp`/`ArriveBarrierOp` ops placed inside the tile body. The
+barrier memdesc and phase values are threaded through `addInputToTileBody`
+so they're accessible inside the tile body despite `IsolatedFromAbove`.
 
 ### Test Coverage
 

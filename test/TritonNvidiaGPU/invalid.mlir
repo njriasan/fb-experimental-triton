@@ -190,8 +190,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %accum_cnt: i64) {
     // expected-error @+1 {{tileMappings must have at least one tile}}
     ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>)
-        accum_cnts(%accum_cnt : i64)
         tile_mappings = []
       setup {
         %c0 = arith.constant 0.0 : f32
@@ -215,8 +213,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %accum_cnt: i64) {
     // expected-error @+1 {{tileMappings[0] has 0 entries but tile region has 2 block arguments (expected 2 or 1)}}
     ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>)
-        accum_cnts(%accum_cnt : i64)
         tile_mappings = [array<i32>]
       setup {
         %c0 = arith.constant 0 : i32
@@ -241,8 +237,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %accum_cnt: i64) {
     // expected-error @+1 {{tileMappings[0][0] = 5 is out of range [0, 2)}}
     ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>)
-        accum_cnts(%accum_cnt : i64)
         tile_mappings = [array<i32: 5>]
       setup {
         %c0 = arith.constant 0 : i32
@@ -267,8 +261,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %accum_cnt: i64) {
     // expected-error @+1 {{type mismatch: setup output 0 has type 'i32' but tile block arg 0 has type 'f32'}}
     ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>)
-        accum_cnts(%accum_cnt : i64)
         tile_mappings = [array<i32: 0>]
       setup {
         %c0 = arith.constant 0 : i32
@@ -292,8 +284,6 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
       %accum_cnt: i64) {
     // expected-error @+1 {{teardown yields 1 values but op has 0 results}}
     ttng.subtiled_region
-        barriers(%bar : !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>)
-        accum_cnts(%accum_cnt : i64)
         tile_mappings = [array<i32: 0>]
       setup {
         %c0 = arith.constant 0 : i32

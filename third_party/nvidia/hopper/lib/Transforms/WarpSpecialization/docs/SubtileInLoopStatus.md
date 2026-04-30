@@ -35,8 +35,9 @@ by processing accumulator subtiles sequentially.
 7. **LowerSubtiledRegion** — Maps setup block args to `op.getInputs()` before
    cloning setup ops to flat IR.
 
-8. **PushSharedSetupToTile** — Maps setup block args back to
-   `op.getInputs()` when replacing shared tile args with external values.
+8. **PushSharedSetupToTile** — Sinks shared tile arguments (constant ops
+   defined in setup) into the tile body. Pass-through input args cannot be
+   pushed due to `IsolatedFromAbove`.
 
 9. **Full compilation pipeline runs** — No crashes, no verification errors.
    The kernel compiles to PTX and runs on GPU.
@@ -47,24 +48,31 @@ by processing accumulator subtiles sequentially.
 ## Remaining Issue
 
 **Runtime deadlock** — The kernel hangs on GPU. The SMEM epilogue-to-store
-barrier (mbarrier) is created and placed correctly as `wait_barrier` /
-`arrive_barrier` ops around the SubtiledRegionOps. The `doTokenLowering` pass
-converts `nvws.producer_acquire/commit` → `wait_barrier/arrive_barrier`
-correctly. However, the runtime synchronization fails — likely a phase
-initialization or index computation mismatch.
+barrier (mbarrier) is created and placed correctly. `doTokenLowering` now
+places barrier ops inside the tile body (threaded through `addInputToTileBody`
+to satisfy `IsolatedFromAbove`). However, the runtime synchronization
+fails — likely a phase initialization or index computation mismatch.
 
 The barrier pattern after `doTokenLowering`:
 
 ```
 // Partition 0 (epilogue, task 1):
-wait_barrier %mbar, %phase   // producer wait (acquire)
-ttng.subtiled_region { ... local_store ... }
-arrive_barrier %mbar, 1      // producer commit
+ttng.subtiled_region {
+  tile {
+    wait_barrier %mbar, %phase   // producer wait (acquire)
+    ... local_store ...
+    arrive_barrier %mbar, 1      // producer commit
+  }
+}
 
 // Partition 1 (store, task 2):
-wait_barrier %mbar, %phase   // consumer wait
-ttng.subtiled_region { ... async_tma_copy ... }
-arrive_barrier %mbar, 1      // consumer release
+ttng.subtiled_region {
+  tile {
+    wait_barrier %mbar, %phase   // consumer wait
+    ... async_tma_copy ...
+    arrive_barrier %mbar, 1      // consumer release
+  }
+}
 ```
 
 ## Files Changed
