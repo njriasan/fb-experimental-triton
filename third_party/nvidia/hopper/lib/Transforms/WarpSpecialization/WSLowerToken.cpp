@@ -136,11 +136,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
     // multiple producers or consumers? Check if num_warps agree.
     unsigned producerWarps = 0, consumerWarps = 0;
     SmallVector<Operation *> usersForToken;
-    // Map from block arguments (inside warp_specialize partitions) back to
-    // the original token value they correspond to.  SubtiledRegionOps inside
-    // partitions reference the block argument, not the outer token, so
-    // handleOneUser needs this mapping to match token_values entries.
-    DenseMap<Value, Value> blockArgToToken;
     for (OpOperand &use : createTokenOp.getResult().getUses()) {
       Operation *user = use.getOwner();
       if (auto wsOp = dyn_cast<ttg::WarpSpecializePartitionsOp>(user)) {
@@ -150,7 +145,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
         for (Region &region : wsOp.getPartitionRegions()) {
           LDBG("-- region " << region.getNumArguments());
           auto tArg = region.getArgument(opndNum);
-          blockArgToToken[tArg] = createTokenOp.getResult();
           for (Operation *tUser : tArg.getUsers()) {
             // Use of TokenOp via capture of warp_specialize.
             usersForToken.push_back(tUser);
@@ -222,15 +216,6 @@ void lowerTokenOperations(Operation *parentOp, int numCTAs,
           builder, loc, singleBarrierMemDescType, bufferEmptyArray, idx);
       ttng::InitBarrierOp::create(builder, loc, barrierEmptyView,
                                   1); // bufferEmptyCount);
-      // Pre-arrive on the empty barrier so the producer's first
-      // wait_barrier returns immediately, but ONLY for tokens used by
-      // SubtiledRegionOps.  For regular SMEM/TMEM barriers, the pipeline
-      // handles first-iteration semantics via phase initialization.
-      bool hasSubtiledUser = llvm::any_of(usersForToken, [](Operation *u) {
-        return isa<ttng::SubtiledRegionOp>(u);
-      });
-      if (hasSubtiledUser)
-        ttng::ArriveBarrierOp::create(builder, loc, barrierEmptyView, 1);
     }
 
     assert(numCTAs == 1 && "remote CTA is not supported yet");
