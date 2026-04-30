@@ -47,6 +47,32 @@ void doPingPongSync(triton::FuncOp &funcOp, unsigned numWarpGroups,
 void doTMAStoreWaitReorder(triton::FuncOp &funcOp);
 void doAnnotateTMAStoreWaits(triton::FuncOp &funcOp);
 void doValidateTMAStoreAnnotations(triton::FuncOp &funcOp);
+void doLowerSubtiledRegionsWithNVWSOps(triton::FuncOp &funcOp) {
+  namespace ttng = triton::nvidia_gpu;
+  namespace nvws = triton::nvws;
+  SmallVector<ttng::SubtiledRegionOp> toInline;
+  funcOp.walk([&](ttng::SubtiledRegionOp op) {
+    Block &tileBlock = op.getTileRegion().front();
+    for (Operation &tileOp : tileBlock.without_terminator()) {
+      if (isa<nvws::ProducerAcquireOp, nvws::ProducerCommitOp,
+              nvws::ConsumerWaitOp, nvws::ConsumerReleaseOp>(&tileOp)) {
+        toInline.push_back(op);
+        break;
+      }
+    }
+  });
+  for (auto op : toInline)
+    ttng::lowerSubtiledRegion(op);
+}
+
+void doLowerRemainingSubtiledRegions(triton::FuncOp &funcOp) {
+  namespace ttng = triton::nvidia_gpu;
+  SmallVector<ttng::SubtiledRegionOp> remaining;
+  funcOp.walk([&](ttng::SubtiledRegionOp op) { remaining.push_back(op); });
+  for (auto op : remaining)
+    ttng::lowerSubtiledRegion(op);
+}
+
 void doGenerateSubtiledRegion(triton::FuncOp &funcOp) {
   auto moduleOp = funcOp->getParentOfType<ModuleOp>();
   PassManager pm(moduleOp.getContext());
@@ -251,25 +277,7 @@ public:
       }
     }
 
-    // Inline SubtiledRegionOps that contain NVWS ops before token
-    // lowering so doTokenLowering can process the ops in flat IR.
-    {
-      namespace ttng = triton::nvidia_gpu;
-      namespace nvws = triton::nvws;
-      SmallVector<ttng::SubtiledRegionOp> toInline;
-      funcOp.walk([&](ttng::SubtiledRegionOp op) {
-        Block &tileBlock = op.getTileRegion().front();
-        for (Operation &tileOp : tileBlock.without_terminator()) {
-          if (isa<nvws::ProducerAcquireOp, nvws::ProducerCommitOp,
-                  nvws::ConsumerWaitOp, nvws::ConsumerReleaseOp>(&tileOp)) {
-            toInline.push_back(op);
-            break;
-          }
-        }
-      });
-      for (auto op : toInline)
-        ttng::lowerSubtiledRegion(op);
-    }
+    doLowerSubtiledRegionsWithNVWSOps(funcOp);
     doTokenLowering(funcOp, numWarpGroups - 1);
     if (dumpIntermediateSteps) {
       llvm::dbgs()
@@ -293,16 +301,7 @@ public:
       llvm::dbgs() << "\n\n\n";
     }
 
-    // Lower all remaining SubtiledRegionOps into flat IR before
-    // TMA store wait reordering operates on the flat loop body.
-    {
-      namespace ttng = triton::nvidia_gpu;
-      SmallVector<ttng::SubtiledRegionOp> remaining;
-      funcOp.walk([&](ttng::SubtiledRegionOp op) { remaining.push_back(op); });
-      for (auto op : remaining)
-        ttng::lowerSubtiledRegion(op);
-    }
-
+    doLowerRemainingSubtiledRegions(funcOp);
     doTMAStoreWaitReorder(funcOp);
     if (dumpIntermediateSteps) {
       llvm::dbgs() << "// -----// WarpSpec internal IR Dump After: "

@@ -134,10 +134,10 @@ doAnnotateTMAStoreWaits
 doValidateTMAStoreAnnotations
 doCodePartitionPost               ← creates inline NVWS ops in SubtiledRegionOps;
                                     multi-task SubtiledRegionOps lowered here
-lowerSubtiledRegion (NVWS)        ← inlines SubtiledRegionOps with NVWS ops
+doLowerSubtiledRegionsWithNVWSOps ← inlines SubtiledRegionOps with NVWS ops
 doTokenLowering                   ← resolves NVWS ops → hardware barrier ops
 scheduleLoops
-lowerSubtiledRegion (remaining)   ← inlines all surviving SubtiledRegionOps
+doLowerRemainingSubtiledRegions   ← inlines all surviving SubtiledRegionOps
 doTMAStoreWaitReorder
 ```
 
