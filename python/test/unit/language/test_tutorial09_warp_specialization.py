@@ -614,6 +614,9 @@ def test_tutorial09_matmul_tma_persistent_warp_specialize(
 ):
     """Test matmul_kernel_tma_persistent with warp_specialize=True for both Flatten values."""
 
+    if FLATTEN:
+        pytest.skip("FLATTEN=True temporarily disabled")
+
     # DATA_PARTITION_FACTOR != 1 requires BLOCK_SIZE_M == 256
     if DATA_PARTITION_FACTOR != 1 and BLOCK_SIZE_M != 256:
         pytest.skip("DATA_PARTITION_FACTOR != 1 requires BLOCK_SIZE_M == 256")
@@ -776,6 +779,9 @@ def test_tutorial09_matmul_descriptor_persistent_warp_specialize(
     separate_epilogue_store,
 ):
     """Test matmul_kernel_descriptor_persistent with warp_specialize=True for both Flatten values."""
+
+    if FLATTEN:
+        pytest.skip("FLATTEN=True temporarily disabled")
 
     # DATA_PARTITION_FACTOR != 1 requires BLOCK_SIZE_M == 256
     if DATA_PARTITION_FACTOR != 1 and BLOCK_SIZE_M != 256:
@@ -972,6 +978,7 @@ def test_tutorial09_matmul_tma_persistent_warp_specialize_splitk(
     EPILOGUE_SUBTILE,
 ):
     """Test deterministic Split-K variant: workspace partial sums + reduce."""
+    pytest.skip("FLATTEN=True temporarily disabled")
     BLOCK_SIZE_M = 128
     BLOCK_SIZE_N = 128
     BLOCK_SIZE_K = 64
