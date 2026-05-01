@@ -114,10 +114,7 @@ doLowerRemainingSubtiledRegions   ← inlines all surviving SubtiledRegionOps
 doTMAStoreWaitReorder
 ```
 
-All SubtiledRegionOps are lowered inside the WS pass. The main TTGIR
-pipeline (`compiler.py`) runs `add_optimize_tmem_layouts` (which pushes
-setup to tile via `pushSubtiledRegionSetupToTile`) but no longer needs
-a separate lowering step — that happens before `doTMAStoreWaitReorder`.
+All SubtiledRegionOps are lowered inside the WS pass.
 
 ### Compiler Option
 
@@ -133,7 +130,7 @@ Default: `False`.
 When `insertAsyncComm` (WSCodePartition) discovers a sync point inside a
 SubtiledRegionOp's tile body, it creates the NVWS op (ProducerAcquireOp,
 ConsumerWaitOp, etc.) directly inside the tile body, threading the token,
-bufferIdx, and phase values through `addInputToTileBody`.
+bufferIdx, and phase values through `addSharedArg`.
 
 Before `doTokenLowering` runs, all SubtiledRegionOps containing NVWS ops
 are inlined via `lowerSubtiledRegion`. This puts the NVWS ops in flat IR

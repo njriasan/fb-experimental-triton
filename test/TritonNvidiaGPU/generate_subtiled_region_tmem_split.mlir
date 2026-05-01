@@ -1,8 +1,8 @@
 // RUN: triton-opt %s -split-input-file --triton-nvidia-gpu-test-generate-subtiled-region --triton-nvidia-optimize-tmem-layouts | FileCheck %s
 
-// Test: multi-task chain with pre-hoisted allocs — the split in the
-// SubtiledRegionOp's setup region is converted to tmem_subslice + tmem_load
-// by OptimizeTMemLayouts, then PushSharedSetupToTile sinks the loads.
+// Test: multi-task chain with pre-hoisted allocs — OptimizeTMemLayouts
+// converts the split to tmem_subslice + tmem_load before the
+// SubtiledRegionOp is generated.
 
 #tmem2 = #ttng.tensor_memory_encoding<blockM = 128, blockN = 128, colStride = 1>
 #blocked3d2 = #ttg.blocked<{sizePerThread = [1, 2, 64], threadsPerWarp = [32, 1, 1], warpsPerCTA = [4, 1, 1], order = [0, 2, 1]}>
