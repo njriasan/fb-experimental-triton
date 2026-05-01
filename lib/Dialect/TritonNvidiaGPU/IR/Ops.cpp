@@ -1162,8 +1162,7 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
   unsigned numPerTile = op.getNumPerTilePositions();
   unsigned numShared = op.getSharedArgs().size();
   unsigned numTileArgs = tileBlock.getNumArguments();
-  bool hasTileIndex =
-      (numTileArgs == numPerTile + numShared + 1);
+  bool hasTileIndex = (numTileArgs == numPerTile + numShared + 1);
 
   auto tileYield = cast<SubtiledRegionYieldOp>(tileBlock.getTerminator());
   unsigned numTileYields = tileYield.getResults().size();
@@ -1178,8 +1177,8 @@ void lowerSubtiledRegion(SubtiledRegionOp op) {
       tileMapping.map(tileBlock.getArgument(numPerTile + j),
                       op.getSharedArgs()[j]);
     if (hasTileIndex) {
-      Value tileIdxConst = arith::ConstantOp::create(
-          builder, loc, builder.getI32IntegerAttr(t));
+      Value tileIdxConst =
+          arith::ConstantOp::create(builder, loc, builder.getI32IntegerAttr(t));
       tileMapping.map(tileBlock.getArgument(numTileArgs - 1), tileIdxConst);
     }
 
@@ -1259,8 +1258,8 @@ LogicalResult SubtiledRegionOp::verify() {
       numTileArgs != numPerTile + numShared + 1)
     return emitOpError("tile region has ")
            << numTileArgs << " block arguments but expected "
-           << numPerTile + numShared << " or "
-           << numPerTile + numShared + 1 << " (with tile index)";
+           << numPerTile + numShared << " or " << numPerTile + numShared + 1
+           << " (with tile index)";
 
   // 6. Validate tile index type if present.
   bool hasTileIndex = (numTileArgs == numPerTile + numShared + 1);
@@ -1295,8 +1294,7 @@ void SubtiledRegionOp::print(OpAsmPrinter &p) {
     p << ")";
   }
 
-  p.printOptionalAttrDict((*this)->getAttrs(),
-                          {getOperandSegmentSizeAttr()});
+  p.printOptionalAttrDict((*this)->getAttrs(), {getOperandSegmentSizeAttr()});
 
   p << " tile";
   p.printRegion(getTileRegion(), /*printEntryBlockArgs=*/true);
@@ -1336,11 +1334,10 @@ ParseResult SubtiledRegionOp::parse(OpAsmParser &parser,
                              parser.getCurrentLocation(), result.operands))
     return failure();
 
-  result.addAttribute(
-      SubtiledRegionOp::getOperandSegmentSizeAttr(),
-      parser.getBuilder().getDenseI32ArrayAttr(
-          {static_cast<int32_t>(perTileOperands.size()),
-           static_cast<int32_t>(sharedOperands.size())}));
+  result.addAttribute(SubtiledRegionOp::getOperandSegmentSizeAttr(),
+                      parser.getBuilder().getDenseI32ArrayAttr(
+                          {static_cast<int32_t>(perTileOperands.size()),
+                           static_cast<int32_t>(sharedOperands.size())}));
 
   if (parser.parseKeyword("tile"))
     return failure();

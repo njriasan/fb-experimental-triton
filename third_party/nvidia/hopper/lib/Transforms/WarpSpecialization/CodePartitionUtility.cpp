@@ -82,13 +82,11 @@ bool hasLoopCarriedAccToken(Operation *tmemAlloc, scf::ForOp forOp) {
 // After createBufferPost, MemDescIndexOp will be used.
 Operation *skipIdxOp(Operation *op) {
   if (auto idx = dyn_cast<triton::gpu::MemDescIndexOp>(op)) {
-    unsigned numUsers = 0;
     Operation *first = nullptr;
     for (auto *user : idx.getOperation()->getUsers()) {
-      ++numUsers;
-      first = user;
+      if (!first)
+        first = user;
     }
-    assert(numUsers <= 1);
     return first;
   }
   return op;

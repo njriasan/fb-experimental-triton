@@ -644,9 +644,9 @@ static void buildSingleSubtiledRegionN(
   }
 
   // --- Create the op ---
-  auto regionOp = SubtiledRegionOp::create(
-      builder, loc, TypeRange{}, perTileOps, sharedOps,
-      builder.getI32IntegerAttr(numTiles));
+  auto regionOp =
+      SubtiledRegionOp::create(builder, loc, TypeRange{}, perTileOps, sharedOps,
+                               builder.getI32IntegerAttr(numTiles));
 
   for (Operation *op : tplChain) {
     auto taskIds = getOpAsyncTaskIds(op);
@@ -844,42 +844,37 @@ static bool buildMultiTaskSubtiledRegionsN(
       }
     }
 
-    // Build tile arg types and N-way mappings.
+    // --- Collect per-tile operands ---
+    SmallVector<Value> perTileOps;
     SmallVector<Type> tileArgTypes;
-    SmallVector<SmallVector<int32_t>> tileMaps(numTiles);
-    int32_t yieldIdx = 0;
 
     if (ownsSetup) {
+      for (Value leaf : leafValues)
+        perTileOps.push_back(leaf);
       tileArgTypes.push_back(leafValues[0].getType());
-      for (unsigned t = 0; t < numTiles; ++t)
-        tileMaps[t].push_back(yieldIdx + t);
-      yieldIdx += numTiles;
     }
 
     for (auto &entry : resolvedDiff) {
       Type argType = entry.needsLocalLoad ? entry.setupVals[0].getType()
                                           : entry.chainVals[0].getType();
-      tileArgTypes.push_back(argType);
       for (unsigned t = 0; t < numTiles; ++t)
-        tileMaps[t].push_back(yieldIdx + t);
-      yieldIdx += numTiles;
+        perTileOps.push_back(entry.needsLocalLoad ? entry.setupVals[t]
+                                                  : entry.chainVals[t]);
+      tileArgTypes.push_back(argType);
     }
 
-    // Outgoing SMEM args.
+    // Outgoing SMEM args (per-tile).
     SmallVector<BufferEntryN *> outBufs;
     if (hasOutgoing) {
       for (auto &buf : transitions[segIdx]) {
-        tileArgTypes.push_back(buf.smemVals[0].getType());
         for (unsigned t = 0; t < numTiles; ++t)
-          tileMaps[t].push_back(yieldIdx + t);
-        yieldIdx += numTiles;
+          perTileOps.push_back(buf.smemVals[t]);
+        tileArgTypes.push_back(buf.smemVals[0].getType());
         outBufs.push_back(&buf);
       }
     }
 
-    // Shared operands: values used by segment chain ops that are not
-    // already mapped (leaf, differing, or SMEM buffer). These need tile
-    // args so the tile body doesn't capture them (IsolatedFromAbove).
+    // --- Collect shared operands ---
     DenseSet<Value> chainResults;
     for (auto *op : seg.opsPerTile[0])
       for (Value r : op->getResults())
@@ -890,7 +885,7 @@ static bool buildMultiTaskSubtiledRegionsN(
     for (auto &entry : resolvedDiff)
       alreadyMapped.insert(entry.chainVals[0]);
 
-    SmallVector<Value> sharedOperands;
+    SmallVector<Value> sharedOps;
     DenseSet<Value> seenShared;
     for (auto *op : seg.opsPerTile[0]) {
       for (Value operand : op->getOperands()) {
@@ -900,120 +895,21 @@ static bool buildMultiTaskSubtiledRegionsN(
           continue;
         if (!seenShared.insert(operand).second)
           continue;
-        sharedOperands.push_back(operand);
+        sharedOps.push_back(operand);
       }
     }
-    for (Value v : sharedOperands) {
-      tileArgTypes.push_back(v.getType());
-      for (unsigned t = 0; t < numTiles; ++t)
-        tileMaps[t].push_back(yieldIdx);
-      yieldIdx += 1;
-    }
 
-    SmallVector<Attribute> mapAttrs;
-    for (auto &m : tileMaps)
-      mapAttrs.push_back(DenseI32ArrayAttr::get(ctx, m));
-    auto tileMappingsAttr = outerBuilder.getArrayAttr(mapAttrs);
-
-    // Collect outer values for IsolatedFromAbove.
-    // Only values defined outside setupOps need to be inputs.
-    SmallVector<Value> outerVals;
-    DenseMap<Value, unsigned> outerIdx;
-    DenseSet<Operation *> setupOpSet(setupOps.begin(), setupOps.end());
-    auto isOuter = [&](Value v) -> bool {
-      if (auto def = v.getDefiningOp())
-        return !ownsSetup || !setupOpSet.contains(def);
-      return true; // block args are outer
-    };
-    auto getOrAdd = [&](Value v) -> unsigned {
-      auto [it, ins] = outerIdx.try_emplace(v, outerVals.size());
-      if (ins)
-        outerVals.push_back(v);
-      return it->second;
-    };
-
-    if (ownsSetup) {
-      for (Operation *op : setupOps)
-        for (Value operand : op->getOperands())
-          if (isOuter(operand))
-            getOrAdd(operand);
-    }
-    // Non-owning setup and differing/buffer vals: only add if outer.
-    if (!ownsSetup) {
-      for (auto &entry : resolvedDiff)
-        for (Value v : entry.setupVals)
-          if (isOuter(v))
-            getOrAdd(v);
-    } else {
-      for (auto &entry : resolvedDiff)
-        for (Value v : entry.setupVals)
-          if (isOuter(v))
-            getOrAdd(v);
-    }
-    for (auto *buf : outBufs)
-      for (unsigned t = 0; t < numTiles; ++t)
-        if (isOuter(buf->smemVals[t]))
-          getOrAdd(buf->smemVals[t]);
-    for (Value v : sharedOperands)
-      getOrAdd(v);
-
-    auto regionOp = SubtiledRegionOp::create(outerBuilder, loc, TypeRange{},
-                                             outerVals, tileMappingsAttr);
-
-    // --- Setup Region ---
-    Block *setupBlock = &regionOp.getSetupRegion().emplaceBlock();
-    for (Value v : outerVals)
-      setupBlock->addArgument(v.getType(), loc);
-    OpBuilder setupBuilder = OpBuilder::atBlockEnd(setupBlock);
-
-    // Build mapping from outer values to setup block args.
-    auto mapToArg = [&](Value v) -> Value {
-      return setupBlock->getArgument(outerIdx[v]);
-    };
-
-    // Helper to resolve a value in the setup region context:
-    // if it's outer, use the block arg; if it's a result of a cloned
-    // setup op, use the cloned result via setupMapping.
-    IRMapping setupMapping;
-    auto resolveVal = [&](Value v) -> Value {
-      if (outerIdx.count(v))
-        return mapToArg(v);
-      return setupMapping.lookupOrDefault(v);
-    };
-
-    SmallVector<Value> setupYields;
-    if (ownsSetup) {
-      // Map outer operands of setupOps to block args.
-      for (Operation *op : setupOps)
-        for (Value operand : op->getOperands())
-          if (isOuter(operand) && !setupMapping.contains(operand))
-            setupMapping.map(operand, mapToArg(operand));
-      for (Operation *op : setupOps)
-        setupBuilder.clone(*op, setupMapping);
-      for (Value leaf : leafValues)
-        setupYields.push_back(setupMapping.lookupOrDefault(leaf));
-      for (auto &entry : resolvedDiff) {
-        for (unsigned t = 0; t < numTiles; ++t)
-          setupYields.push_back(resolveVal(entry.setupVals[t]));
-      }
-    } else {
-      for (auto &entry : resolvedDiff) {
-        for (unsigned t = 0; t < numTiles; ++t)
-          setupYields.push_back(resolveVal(entry.setupVals[t]));
-      }
-    }
-    for (auto *buf : outBufs) {
-      for (unsigned t = 0; t < numTiles; ++t)
-        setupYields.push_back(resolveVal(buf->smemVals[t]));
-    }
-    for (Value v : sharedOperands)
-      setupYields.push_back(resolveVal(v));
-    SubtiledRegionYieldOp::create(setupBuilder, loc, setupYields);
+    // --- Create the op ---
+    auto regionOp = SubtiledRegionOp::create(
+        outerBuilder, loc, TypeRange{}, perTileOps, sharedOps,
+        outerBuilder.getI32IntegerAttr(numTiles));
 
     // --- Tile Region ---
     Block *tileBlock = &regionOp.getTileRegion().emplaceBlock();
     for (Type ty : tileArgTypes)
       tileBlock->addArgument(ty, loc);
+    for (Value v : sharedOps)
+      tileBlock->addArgument(v.getType(), loc);
     tileBlock->addArgument(outerBuilder.getI32Type(), loc);
 
     OpBuilder tileBuilder = OpBuilder::atBlockEnd(tileBlock);
@@ -1038,10 +934,9 @@ static bool buildMultiTaskSubtiledRegionsN(
     for (size_t i = 0; i < outBufs.size(); ++i)
       outSmemArgs.push_back(tileBlock->getArgument(argIdx++));
 
-    for (Value v : sharedOperands)
+    for (Value v : sharedOps)
       tileMapping.map(v, tileBlock->getArgument(argIdx++));
 
-    // Clone from tile 0's ops (the template chain for this segment).
     for (Operation *op : seg.opsPerTile[0])
       tileBuilder.clone(*op, tileMapping);
 

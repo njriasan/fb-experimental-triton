@@ -182,19 +182,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
 
 // -----
 
-// Verify: tileMappings must have at least one tile
-#shared2 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+// Verify: perTileArgs not divisible by numTiles
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_empty_tile_mappings(
-      %bar: !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>,
-      %accum_cnt: i64) {
-    // expected-error @+1 {{tileMappings must have at least one tile}}
+  tt.func @subtiled_region_bad_per_tile_count(%v0: i32, %v1: i32, %v2: i32) {
+    // expected-error @+1 {{perTileArgs has 3 operands which is not divisible by numTiles=2}}
     ttng.subtiled_region
-        tile_mappings = []
-      setup {
-        %c0 = arith.constant 0.0 : f32
-        ttng.subtiled_region_yield %c0 : f32
-      } tile(%arg0: f32) {
+        per_tile(%v0, %v1, %v2 : i32, i32, i32)
+        {numTiles = 2 : i32}
+      tile(%arg0: i32) {
         ttng.subtiled_region_yield
       }
     tt.return
@@ -203,84 +198,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
 
 // -----
 
-// Verify: tileMappings inner array length must match tile block args
-#shared2 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
+// Verify: wrong tile block arg count
 module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_wrong_mapping_length(
-      %bar: !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>,
-      %accum_cnt: i64) {
-    // expected-error @+1 {{tileMappings[0] has 0 entries but tile region has 2 block arguments (expected 2 or 1)}}
+  tt.func @subtiled_region_wrong_tile_args(%v0: i32, %v1: i32) {
+    // expected-error @+1 {{tile region has 3 block arguments but expected 1 or 2}}
     ttng.subtiled_region
-        tile_mappings = [array<i32>]
-      setup {
-        %c0 = arith.constant 0 : i32
-        %c1 = arith.constant 1 : i32
-        ttng.subtiled_region_yield %c0, %c1 : i32, i32
-      } tile(%arg0: i32, %arg1: i32) {
-        ttng.subtiled_region_yield
-      }
-    tt.return
-  }
-}
-
-// -----
-
-// Verify: setup index out of range
-#shared2 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_index_out_of_range(
-      %bar: !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>,
-      %accum_cnt: i64) {
-    // expected-error @+1 {{tileMappings[0][0] = 5 is out of range [0, 2)}}
-    ttng.subtiled_region
-        tile_mappings = [array<i32: 5>]
-      setup {
-        %c0 = arith.constant 0 : i32
-        %c1 = arith.constant 1 : i32
-        ttng.subtiled_region_yield %c0, %c1 : i32, i32
-      } tile(%arg0: i32) {
-        ttng.subtiled_region_yield
-      }
-    tt.return
-  }
-}
-
-// -----
-
-// Verify: type mismatch between setup output and tile block arg
-#shared2 = #ttg.swizzled_shared<{vec = 1, perPhase = 1, maxPhase = 1, order = [0]}>
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_type_mismatch(
-      %bar: !ttg.memdesc<1xi64, #shared2, #ttg.shared_memory, mutable>,
-      %accum_cnt: i64) {
-    // expected-error @+1 {{type mismatch: setup output 0 has type 'i32' but tile block arg 0 has type 'f32'}}
-    ttng.subtiled_region
-        tile_mappings = [array<i32: 0>]
-      setup {
-        %c0 = arith.constant 0 : i32
-        ttng.subtiled_region_yield %c0 : i32
-      } tile(%arg0: f32) {
-        ttng.subtiled_region_yield
-      }
-    tt.return
-  }
-}
-
-// -----
-
-module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.target = "cuda:100"} {
-  tt.func @subtiled_region_mixed_task_ids() {
-    // expected-error @+1 {{tile body has mixed async_task_id}}
-    ttng.subtiled_region
-        tile_mappings = [array<i32: 0>, array<i32: 1>]
-      setup {
-        %c0 = arith.constant 0 : i32
-        %c1 = arith.constant 1 : i32
-        ttng.subtiled_region_yield %c0, %c1 : i32, i32
-      } tile(%arg0: i32) {
-        %a = arith.index_cast %arg0 {async_task_id = array<i32: 3>} : i32 to index
-        %b = arith.index_cast %arg0 {async_task_id = array<i32: 4>} : i32 to index
-        %c = arith.index_cast %arg0 {async_task_id = array<i32: 3>} : i32 to index
+        per_tile(%v0, %v1 : i32, i32)
+        {numTiles = 2 : i32}
+      tile(%a: i32, %b: i32, %c: i32) {
         ttng.subtiled_region_yield
       }
     tt.return

@@ -15,33 +15,33 @@ copies of inlined code.
 ### Op Definition
 
 `SubtiledRegionOp` (`ttng.subtiled_region`) is `IsolatedFromAbove`: all
-values from the enclosing scope must be passed explicitly via `inputs`.
-The setup region receives these as block arguments.
+values used in the tile body must be passed as `perTileArgs` or `sharedArgs`.
 
-It has three regions:
+It has one region:
 
-- **setup**: Receives `inputs` as block arguments. Computes subtile values
-  (tmem_load → reshape → trans → split). Terminated by
-  `subtiled_region_yield` whose values are indexed by tile mappings.
-- **tile**: Per-tile body, replicated during lowering. Block arguments are
-  substituted from setup outputs via `tileMappings`. An optional trailing
-  i32 argument receives the tile index (0, 1, …).
-- **teardown**: Runs once after all tiles. Its yield values become the op's
+- **tile**: Per-tile body, replicated `numTiles` times during lowering.
+  Tile block arguments are ordered:
+  `[perTile0, ..., perTileK-1, shared0, ..., sharedM-1, tileIdx?]`.
+  Terminated by `subtiled_region_yield` which optionally yields per-tile
   results.
 
 Key operands:
-- `inputs: Variadic<AnyType>` — all values captured from the enclosing scope
+- `perTileArgs: Variadic<AnyType>` — `numTiles * K` operands grouped by
+  position. For K per-tile arg positions, operands `[j*N..(j+1)*N)` are
+  the values for position j across all tiles.
+- `sharedArgs: Variadic<AnyType>` — M operands broadcast to all tiles.
 
 Key attributes:
-- `tileMappings: ArrayAttr` — one `DenseI32ArrayAttr` per tile mapping tile
-  block args to setup yield indices
+- `numTiles: I32Attr` — number of tile replications.
 
 Key methods:
-- `addInputToTileBody(Value)` — threads a value through inputs → setup yield
-  → tile mappings → tile block argument. Used by `insertAsyncComm` to make
-  NVWS token/bufferIdx/phase values accessible inside the tile body, and by
-  `doTokenLowering` to thread barrier memdesc/phase values in. Respects
-  IsolatedFromAbove.
+- `addSharedArg(Value)` — appends a shared arg and adds a tile block
+  argument. Used by `insertAsyncComm` to make NVWS token/bufferIdx/phase
+  values accessible inside the tile body.
+- `getNumPerTilePositions()` — returns `perTileArgs.size() / numTiles`.
+
+If the tile body yields M values, the op produces `numTiles * M` results,
+grouped by yield position (matching `tt.join` argument order).
 
 Defined in `include/triton/Dialect/TritonNvidiaGPU/IR/TritonNvidiaGPUOps.td`.
 
@@ -82,41 +82,14 @@ chains pairwise, recording differing operands and identity-compatible ops.
 `checkStructuralEquivalenceN` wraps this for N chains with consistent
 identity handling.
 
-#### 2. OptimizeTMemLayouts (+ PushSharedSetupToTile)
-**File:** `lib/Dialect/TritonNvidiaGPU/Transforms/OptimizeTMemLayouts.cpp`
-**Pass:** `triton-nvidia-optimize-tmem-layouts`
-
-This pass serves dual purposes:
-
-1. **TMem layout optimization** (pattern-based): Converts
-   `tmem_load → reshape → trans → split` chains into
-   `tmem_subslice → tmem_load` pairs, eliminating reshape/trans overhead.
-   Also handles `tmem_store + join` patterns and layout selection for
-   vectorization.
-
-2. **SubtiledRegionOp setup push** (imperative, after patterns fire): Walks
-   all `SubtiledRegionOp`s and calls `pushSubtiledRegionSetupToTile()`, which
-   runs three transformations:
-   - `addSubsliceRangeToSetup` — extracts per-tile N offsets from
-     `tmem_subslice` ops as i32 tile args
-   - `pushTmemLoadsToTile` — moves per-tile `tmem_load` chains from setup
-     into tile body, interleaving loads with compute
-   - `pushSharedSetupToTile` — sinks "shared" tile arguments (uniform across
-     tiles) into the tile body. Only constants defined inside setup can be
-     pushed; pass-through input args stay as tile args (IsolatedFromAbove
-     prevents referencing the original input from inside the tile body)
-
-The push logic lives in `PushSharedSetupToTile.cpp` and is exposed via the
-`pushSubtiledRegionSetupToTile()` entry point declared in `Dialect.h`.
-
-#### 3. Lowering (`lowerSubtiledRegion`)
+#### 2. Lowering (`lowerSubtiledRegion`)
 **File:** `lib/Dialect/TritonNvidiaGPU/IR/Ops.cpp`
 
 `lowerSubtiledRegion(SubtiledRegionOp)` expands a SubtiledRegionOp into flat
-IR: inlines setup, replicates the tile body N times with value substitution
-from tile mappings, and inlines teardown. Called from:
+IR: replicates the tile body N times, substituting per-tile args for each
+tile and broadcasting shared args. Called from:
 - `WarpSpecialization.cpp` — inlines SubtiledRegionOps with NVWS ops before
-  doTokenLowering
+  doTokenLowering, and lowers all remaining before doTMAStoreWaitReorder
 - `WSCodePartition.cpp` — inlines multi-task SubtiledRegionOps before
   specializeRegion
 
@@ -174,9 +147,8 @@ hardware `WaitBarrierOp`/`ArriveBarrierOp`.
 | `test/TritonNvidiaGPU/generate_subtiled_region_dp1.mlir` | DP=1 epilogue subtiling |
 | `test/TritonNvidiaGPU/generate_subtiled_region_multi_task.mlir` | Multi-task, identity, addmm patterns |
 | `test/TritonNvidiaGPU/generate_subtiled_region_ntile.mlir` | 4-tile, 8-tile nested splits |
-| `test/TritonNvidiaGPU/generate_subtiled_region_tmem_split.mlir` | tmem_subslice + push-to-tile optimization |
-| `test/TritonNvidiaGPU/push_shared_setup_to_tile.mlir` | Setup-to-tile push transformations |
-| `test/TritonNvidiaGPU/ops.mlir` | Round-trip parse/print |
+| `test/TritonNvidiaGPU/generate_subtiled_region_tmem_split.mlir` | tmem_subslice optimization |
+| `test/TritonNvidiaGPU/ops.mlir` | Round-trip parse/print, per-tile results |
 | `test/TritonNvidiaGPU/invalid.mlir` | Verifier error cases |
 | `test/Hopper/WarpSpecialization/ws_token_lowering_subtiled_region.mlir` | Token lowering with SubtiledRegionOps inside warp_specialize |
 | `test/Hopper/WarpSpecialization/ws_code_partition_subtiled_region.mlir` | Code partition with SMEM channels between SubtiledRegionOps |

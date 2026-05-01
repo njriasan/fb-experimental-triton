@@ -74,7 +74,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK:     arith.truncf
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
-  // CHECK-NOT: ttng.subtiled_region tile_mappings
+  // CHECK-NOT: ttng.subtiled_region per_tile
   tt.func @single_task_no_split(
       %tmem_buf: !ttg.memdesc<128x128xf32, #tmem2, #ttng.tensor_memory, mutable>,
       %acc_tok: !ttg.async.token) {
@@ -421,14 +421,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: tt.split
   // CHECK: tt.split
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: inputs(
-  // CHECK-SAME: tile_mappings = [array<i32: 0,
-  // CHECK-SAME: array<i32: 1,
-  // CHECK-SAME: array<i32: 2,
-  // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: setup{
-  // CHECK:     ttng.subtiled_region_yield
-  // CHECK:   } tile{
+  // CHECK-SAME: per_tile(
+  // CHECK:   tile{
   // CHECK:     arith.truncf
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield

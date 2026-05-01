@@ -23,14 +23,8 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: tt.split
   // CHECK: tt.split
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: inputs(
-  // CHECK-SAME: tile_mappings = [array<i32: 0,
-  // CHECK-SAME: array<i32: 1,
-  // CHECK-SAME: array<i32: 2,
-  // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: setup{
-  // CHECK:     ttng.subtiled_region_yield
-  // CHECK:   } tile{
+  // CHECK-SAME: per_tile(
+  // CHECK:   tile{
   // CHECK:     arith.truncf
   // CHECK:     tt.descriptor_store
   // CHECK:     ttng.subtiled_region_yield
@@ -88,17 +82,7 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // Splits happen before the subtiled_region, passed as inputs.
   // CHECK-COUNT-7: tt.split
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: inputs(
-  // CHECK-SAME: tile_mappings = [array<i32: 0,
-  // CHECK-SAME: array<i32: 1,
-  // CHECK-SAME: array<i32: 2,
-  // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: array<i32: 4,
-  // CHECK-SAME: array<i32: 5,
-  // CHECK-SAME: array<i32: 6,
-  // CHECK-SAME: array<i32: 7,
-  // CHECK-SAME: setup{
-  // CHECK:     ttng.subtiled_region_yield
+  // CHECK-SAME: per_tile(
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     tt.descriptor_store
@@ -186,20 +170,14 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32, ttg.targ
   // CHECK: ttg.local_alloc
   // CHECK: ttg.local_alloc
   // CHECK: ttng.subtiled_region
-  // CHECK-SAME: tile_mappings = [array<i32: 0,
-  // CHECK-SAME: array<i32: 1,
-  // CHECK-SAME: array<i32: 2,
-  // CHECK-SAME: array<i32: 3,
-  // CHECK-SAME: setup{
+  // CHECK-SAME: per_tile(
   // CHECK:   } tile{
   // CHECK:     arith.truncf
   // CHECK:     ttg.local_store
   // CHECK:     ttng.subtiled_region_yield
   // CHECK:   }
   // Second: local_load + convert_layout (task 4)
-  // CHECK: ttng.subtiled_region inputs(
-  // CHECK-SAME: tile_mappings = [array<i32: 0>, array<i32: 1>, array<i32: 2>, array<i32: 3>]
-  // CHECK-SAME: setup{
+  // CHECK: ttng.subtiled_region
   // CHECK:   } tile{
   // CHECK:     ttg.local_load
   // CHECK:     ttg.convert_layout
