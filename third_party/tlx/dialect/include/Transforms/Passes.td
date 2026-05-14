@@ -88,6 +88,24 @@ def TLXResolvePlaceholderLayouts : Pass<"tlx-resolve-placeholder-layouts", "mlir
   ];
 }
 
+def TLXPackLogicalScaleSmem : Pass<"tlx-pack-logical-scale-smem", "mlir::ModuleOp"> {
+  let summary = "Pack logical 2D scale SMEM stores for TMEM scale copies";
+
+  let description = [{
+    This pass rewrites logical 2D scale SMEM producer stores into the packed
+    32x128b layout required by ttng.tmem_copy when copying into tensor memory
+    scales layout. It runs after warp specialization, resolving partition
+    block arguments through warp-specialize captures and rewriting each region's
+    local memdesc view independently.
+  }];
+
+  let dependentDialects = [
+    "mlir::triton::TritonDialect",
+    "mlir::triton::gpu::TritonGPUDialect",
+    "mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect"
+  ];
+}
+
 def TLXPrintTTGIRToTLX : Pass<"tlx-print-ttgir-to-tlx", "mlir::ModuleOp"> {
   let summary = "Print TTGIR operations with their TLX equivalents";
 

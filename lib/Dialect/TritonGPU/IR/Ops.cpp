@@ -829,6 +829,19 @@ static LogicalResult verifySharedMemoryRank(Operation *op,
   return success();
 }
 
+static bool isLogicalScaleStoreToPackedScaleSmem(RankedTensorType srcTy,
+                                                 MemDescType dstTy) {
+  if (srcTy.getRank() != 2 || dstTy.getRank() != 5)
+    return false;
+  if (!srcTy.getElementType().isIntOrFloat() ||
+      srcTy.getElementType().getIntOrFloatBitWidth() != 8 ||
+      srcTy.getElementType() != dstTy.getElementType())
+    return false;
+  ArrayRef<int64_t> dstShape = dstTy.getShape();
+  return dstShape[3] == 2 && dstShape[4] == 256 &&
+         product<int64_t>(srcTy.getShape()) == product<int64_t>(dstShape);
+}
+
 LogicalResult LocalAllocOp::verify() {
   if (!isa<SharedMemorySpaceAttr>(getType().getMemorySpace()))
     return emitOpError("should create a buffer of shared memory");
@@ -842,6 +855,9 @@ LogicalResult LocalAllocOp::verify() {
 LogicalResult LocalStoreOp::verify() {
   if (!getDst().getType().getMutableMemory())
     return emitOpError("Cannot store into immutable memory");
+  if (isLogicalScaleStoreToPackedScaleSmem(getSrc().getType(),
+                                           getDst().getType()))
+    return success();
   if (failed(verifySharedMemoryRank(*this, getSrc().getType(),
                                     getDst().getType(), "source")))
     return failure();

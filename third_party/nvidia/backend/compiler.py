@@ -615,6 +615,7 @@ class CUDABackend(BaseBackend):
         dump_enabled = pm.enable_debug()
         emuTF32 = (capability // 10 >= 8)
         passes.ttir.add_convert_to_ttgpuir(pm, f"cuda:{capability}", opt.num_warps, 32, opt.num_ctas)
+        tlx.tlx_passes.add_tlx_pack_logical_scale_smem(pm)
         # optimize TTGIR
         passes.ttgpuir.add_coalesce(pm)
         tlx.tlx_passes.add_tlx_propagate_layout(pm)
@@ -695,6 +696,7 @@ class CUDABackend(BaseBackend):
             # hoist again and allow hoisting out of if statements
             passes.ttgpuir.add_hoist_tmem_alloc(pm, True)
             nvidia.passes.ttnvgpuir.add_remove_tmem_tokens(pm)
+            tlx.tlx_passes.add_tlx_pack_logical_scale_smem(pm)
         else:
             passes.ttir.add_triton_licm(pm)
         passes.common.add_canonicalizer(pm)
