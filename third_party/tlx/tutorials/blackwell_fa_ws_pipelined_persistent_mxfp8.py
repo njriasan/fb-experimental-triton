@@ -2344,7 +2344,7 @@ def _attn_bwd_mxf8_ws(
                 # REUSE_GROUP_3 SYNCHRONIZATION:
                 # Linear order for all deps. For epilogue MMA 4 -> MMA 5.
                 # MMA 4 handled by q_dk_empties[q_buf_id].
-                tlx.barrier_wait(dq_empties[0], tmem_phase ^ 1)
+                # tlx.barrier_wait(dq_empties[0], tmem_phase ^ 1)
                 tlx.barrier_wait(q_dk_empties[q_buf_id], q_phase)
                 # Experiment: for the N_CTX=128 repro, MMA 5 epilogue can reuse
                 # the dQ scales packed into SMEM during dS quantization and
