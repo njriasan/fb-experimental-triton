@@ -10,7 +10,7 @@ from triton.language.extra.tlx.warp_spec import get_bufidx_phase
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton.language.extra.tlx.mxfp8_utils import (
     _to_mxfp8_block,
-    _to_mxfp8_block_with_block_log2_amax,
+    to_mxfp8_block_with_block_log2_amax,
 )
 from torchao.prototype.mx_formats.mx_tensor import MXTensor, ScaleCalculationMode
 
@@ -247,7 +247,7 @@ def _softmax_inner_loop(
         l_ij = tl.sum(p_i, 1)
 
         tlx.barrier_wait(tlx.local_view(p_empties, cid), qk_phase ^ 1)
-        p_fp8, p_scale = _to_mxfp8_block_with_block_log2_amax(
+        p_fp8, p_scale = to_mxfp8_block_with_block_log2_amax(
             p_i,
             block_log2_amax,
             VEC_SIZE,
@@ -1370,7 +1370,7 @@ def _softmax_recompute_quantization_iter(
     block_maxes_p = tl.max(qkT_reshaped, 2)
 
     # Quantize P^T -> TMEM (FP8 data + E8M0 scales)
-    p_fp8, p_scale = _to_mxfp8_block_with_block_log2_amax(
+    p_fp8, p_scale = to_mxfp8_block_with_block_log2_amax(
         pT,
         block_maxes_p,
         VEC_SIZE,

@@ -340,7 +340,7 @@ def _to_mxfp8_block_with_block_amax(
 
 
 @triton.jit
-def _to_mxfp8_block_with_block_log2_amax(
+def to_mxfp8_block_with_block_log2_amax(
     data_input,
     block_log2_amax,
     VEC_SIZE: tl.constexpr,
@@ -351,6 +351,12 @@ def _to_mxfp8_block_with_block_log2_amax(
 
     This is the P = exp2(x) variant of _to_mxfp8_block_with_block_amax. It
     avoids materializing exp2(max(x)) for scale selection.
+
+    This is legal when the quantized values are nonnegative values produced by
+    exp2 from the supplied log-domain values. In that case abs(P) == P, and
+    exp2 is monotonic, so max(abs(exp2(x))) == exp2(max(x)). The scale can
+    therefore be computed from max(x) directly as a log2-domain amax:
+    ceil(max(x) - log2(fp8_max)).
 
     Args:
         data_input: Input tensor [BLOCK_M, BLOCK_K] in float32
