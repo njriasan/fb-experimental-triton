@@ -48,6 +48,43 @@ def _fused_amax_to_e8m0(amax, max_norm_rcp):
 
 
 @triton.jit
+def _fused_log2_amax_to_e8m0(log2_amax, log2_float_max):
+    """
+    Fused log2(amax)-to-E8M0 scale conversion.
+
+    For P = exp2(x), callers can pass max(x) directly instead of materializing
+    exp2(max(x)) only to convert that value back into an E8M0 exponent.
+
+    Returns (e8m0_exp as uint32, inv_scale as float32).
+    Caller should cast e8m0_exp to uint8.
+    """
+    return tl.inline_asm_elementwise(
+        """
+        {
+            .reg .f32 fle_log2_scale;
+            .reg .s32 fle_exp_s32;
+            .reg .u32 fle_exp, fle_inv_exp, fle_inv_bits;
+            sub.f32 fle_log2_scale, $2, $3;
+            cvt.rpi.s32.f32 fle_exp_s32, fle_log2_scale;
+            add.s32 fle_exp_s32, fle_exp_s32, 127;
+            max.s32 fle_exp_s32, fle_exp_s32, 0;
+            min.s32 fle_exp_s32, fle_exp_s32, 254;
+            cvt.u32.s32 fle_exp, fle_exp_s32;
+            mov.u32 $0, fle_exp;
+            sub.u32 fle_inv_exp, 254, fle_exp;
+            shl.b32 fle_inv_bits, fle_inv_exp, 23;
+            mov.b32 $1, fle_inv_bits;
+        }
+        """,
+        "=r,=f,f,f",
+        [log2_amax, log2_float_max],
+        dtype=(tl.uint32, tl.float32),
+        is_pure=True,
+        pack=1,
+    )
+
+
+@triton.jit
 def _cvt_e4m3x4_f32(a):
     """
     Vectorized FP32 → FP8 E4M3 conversion using packed cvt.rn.satfinite.e4m3x2
@@ -222,6 +259,55 @@ def _amax_to_e8m0_and_quantize(
 
 
 @triton.jit
+def _log2_amax_to_e8m0_and_quantize(
+    data_input,
+    block_log2_amax,
+    VEC_SIZE: tl.constexpr,
+    dtype: tl.constexpr,
+):
+    """
+    Compute E8M0 scales from pre-computed log2 block amaxes and quantize data.
+
+    This is for data that is already materialized in linear space, but whose
+    block amax is naturally available in log2 space, such as P = exp2(QK - M).
+
+    Args:
+        data_input: Input tensor [BLOCK_M, BLOCK_K] in float32
+        block_log2_amax: Pre-computed log2 block amaxes [BLOCK_M, NUM_SCALES]
+        VEC_SIZE: MX block size (32)
+        dtype: tl.float8e4nv or tl.float8e5
+
+    Returns:
+        scale_e8m0: E8M0 biased exponent scales [BLOCK_M, NUM_SCALES]
+        data_fp8: Quantized FP8 data [BLOCK_M, BLOCK_K]
+    """
+    BLOCK_M: tl.constexpr = data_input.shape[0]
+    BLOCK_K: tl.constexpr = data_input.shape[1]
+    NUM_SCALES: tl.constexpr = BLOCK_K // VEC_SIZE
+
+    if dtype == tl.float8e4nv:
+        LOG2_FLOAT_MAX: tl.constexpr = 8.807354922057604
+    else:
+        tl.static_assert(dtype == tl.float8e5)
+        LOG2_FLOAT_MAX: tl.constexpr = 15.807354922057604
+
+    scale_u32, quant_scale = _fused_log2_amax_to_e8m0(block_log2_amax, LOG2_FLOAT_MAX)
+    scale_e8m0 = scale_u32.to(tl.uint8)
+
+    data_reshaped = tl.reshape(data_input, [BLOCK_M, NUM_SCALES, VEC_SIZE])
+    quant_scale_expanded = tl.reshape(quant_scale, [BLOCK_M, NUM_SCALES, 1])
+    scaled_data = _mul_f32x2(data_reshaped, quant_scale_expanded)
+
+    if dtype == tl.float8e4nv:
+        data_fp8 = _cvt_e4m3x4_f32(scaled_data)
+    else:
+        data_fp8 = _cvt_e5m2x4_f32(scaled_data)
+
+    data_fp8_flat = tl.reshape(data_fp8, [BLOCK_M, BLOCK_K])
+    return scale_e8m0, data_fp8_flat
+
+
+@triton.jit
 def _to_mxfp8_block_with_block_amax(
     data_input,
     block_amax,
@@ -249,5 +335,41 @@ def _to_mxfp8_block_with_block_amax(
     tl.static_assert(VEC_SIZE == 32)
 
     scale_e8m0, data_fp8 = _amax_to_e8m0_and_quantize(data_input, block_amax, VEC_SIZE, dtype)
+
+    return data_fp8, scale_e8m0
+
+
+@triton.jit
+def _to_mxfp8_block_with_block_log2_amax(
+    data_input,
+    block_log2_amax,
+    VEC_SIZE: tl.constexpr,
+    dtype: tl.constexpr,
+):
+    """
+    Convert float32 data to MXFP8 using pre-computed log2 block amaxes.
+
+    This is the P = exp2(x) variant of _to_mxfp8_block_with_block_amax. It
+    avoids materializing exp2(max(x)) for scale selection.
+
+    Args:
+        data_input: Input tensor [BLOCK_M, BLOCK_K] in float32
+        block_log2_amax: Pre-computed log2 block amaxes [BLOCK_M, NUM_SCALES]
+        VEC_SIZE: MX block size (32)
+        dtype: tl.float8e4nv or tl.float8e5
+
+    Return:
+        The FP8 data and E8M0 scales. Callers are responsible for storing them.
+    """
+    BLOCK_K: tl.constexpr = data_input.shape[1]
+    tl.static_assert(BLOCK_K % VEC_SIZE == 0)
+    tl.static_assert(VEC_SIZE == 32)
+
+    scale_e8m0, data_fp8 = _log2_amax_to_e8m0_and_quantize(
+        data_input,
+        block_log2_amax,
+        VEC_SIZE,
+        dtype,
+    )
 
     return data_fp8, scale_e8m0

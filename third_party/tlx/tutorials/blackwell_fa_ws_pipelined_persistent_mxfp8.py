@@ -10,7 +10,7 @@ from triton.language.extra.tlx.warp_spec import get_bufidx_phase
 from triton.tools.tensor_descriptor import TensorDescriptor
 from triton.language.extra.tlx.mxfp8_utils import (
     _to_mxfp8_block,
-    _to_mxfp8_block_with_block_amax,
+    _to_mxfp8_block_with_block_log2_amax,
 )
 from torchao.prototype.mx_formats.mx_tensor import MXTensor, ScaleCalculationMode
 
@@ -237,19 +237,19 @@ def _softmax_inner_loop(
         qk = _fma_f32x2(qk, qk_scale, -m_scaled[:, None])
         p_i = tl.math.exp2(qk)
 
-        # Derive block amax from pre-computed block maxes via monotonicity
-        # of exp2: max(exp2(x)) == exp2(max(x)), avoiding 128 max(abs())
-        # ops per row in the MXFP8 conversion.
-        block_amax = tl.math.exp2(block_maxes * qk_scale - m_scaled[:, None])
+        # Derive block amax in log2 space via monotonicity of exp2:
+        # log2(max(exp2(x))) == max(x), avoiding the per-block exp2 and the
+        # 128 max(abs()) ops per row in the MXFP8 conversion.
+        block_log2_amax = _fma_f32x2(block_maxes, qk_scale, -m_scaled[:, None])
 
         # Compute row sum before p_empties wait: if MMA is still doing the
         # previous PV GEMM, the wait stalls — fill that time with the sum.
         l_ij = tl.sum(p_i, 1)
 
         tlx.barrier_wait(tlx.local_view(p_empties, cid), qk_phase ^ 1)
-        p_fp8, p_scale = _to_mxfp8_block_with_block_amax(
+        p_fp8, p_scale = _to_mxfp8_block_with_block_log2_amax(
             p_i,
-            block_amax,
+            block_log2_amax,
             VEC_SIZE,
             out_dtype,
         )
@@ -1365,15 +1365,14 @@ def _softmax_recompute_quantization_iter(
     qkT_scaled = tl.minimum(qkT_scaled, 20.0)
     pT = tl.math.exp2(qkT_scaled)
 
-    # Block amax for P via monotonicity of exp2
+    # Block amax for P in log2 space via monotonicity of exp2
     qkT_reshaped = tl.reshape(qkT_scaled, [BLOCK_N1, P_NUM_BLOCKS, VEC_SIZE])
     block_maxes_p = tl.max(qkT_reshaped, 2)
-    block_amax_p = tl.math.exp2(block_maxes_p)
 
     # Quantize P^T -> TMEM (FP8 data + E8M0 scales)
-    p_fp8, p_scale = _to_mxfp8_block_with_block_amax(
+    p_fp8, p_scale = _to_mxfp8_block_with_block_log2_amax(
         pT,
-        block_amax_p,
+        block_maxes_p,
         VEC_SIZE,
         p_dtype,
     )
