@@ -1871,14 +1871,6 @@ def _attn_bwd_mxf8_ws(
         with tlx.async_task("default"):
             blk_idx = 0
             for _i in range(tiles_per_sm):
-                _, persistent_tmem_phase = get_bufidx_phase(_i, NUM_BUFFERS_TMEM)
-                off_seq_h = tile_idx // n_tile_num
-                off_z = off_seq_h // H
-                off_h = off_seq_h % H
-                pid = tile_idx % n_tile_num
-                start_n = pid * BLOCK_N1
-                base_q = (off_z * H + off_h).to(tl.int64) * N_CTX
-
                 # Prologue: produce P for the first M-block.
                 # Call _softmax_recompute_quantization_iter with
                 # p_scale_tmem_prologue
@@ -1963,6 +1955,12 @@ def _attn_bwd_mxf8_ws(
 
                 # Epilogue: dK / dV TMA store
                 kv_buf_id, kv_phase = get_bufidx_phase(_i, NUM_BUFFERS_KV)
+                _, persistent_tmem_phase = get_bufidx_phase(_i, NUM_BUFFERS_TMEM)
+                off_seq_h = tile_idx // n_tile_num
+                off_z = off_seq_h // H
+                off_h = off_seq_h % H
+                pid = tile_idx % n_tile_num
+                start_n = pid * BLOCK_N1
 
                 tlx.barrier_wait(dv_fulls[0], persistent_tmem_phase)
                 slice_size: tl.constexpr = HEAD_DIM // EPILOGUE_SUBTILE
@@ -2023,7 +2021,6 @@ def _attn_bwd_mxf8_ws(
                 off_seq_h = tile_idx // n_tile_num
                 off_z = off_seq_h // H
                 off_h = off_seq_h % H
-                base_q = (off_z * H + off_h).to(tl.int64) * N_CTX
 
                 curr_m = 0
                 for _ in range(num_steps):
@@ -2039,7 +2036,7 @@ def _attn_bwd_mxf8_ws(
                         dq = tlx.local_load(dq_slice)
                         if slice_id == (DQ_REDUCE_ITERS - 1):
                             tlx.barrier_arrive(dq_empties[0])
-                        dq = dq * LN2
+                        dq = _mul_f32x2(dq, LN2)
                         tlx.async_descriptor_store_wait(DQ_REDUCE_STAGES - 1)
                         tlx.local_store(
                             dq_store_buf[dq_smem_idx],
