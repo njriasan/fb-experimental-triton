@@ -631,7 +631,6 @@ def _assert_close_with_cosine(
     min_cosine: float,
 ) -> None:
     cosine = _cosine_similarity(actual, expected)
-    # TODO: Enable testing?
     # torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
     assert cosine >= min_cosine, f"{label} cosine_similarity={cosine:.6f} fell below min_cosine={min_cosine:.6f}"
 
