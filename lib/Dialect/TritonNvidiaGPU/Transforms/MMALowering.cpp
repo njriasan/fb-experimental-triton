@@ -56,10 +56,11 @@ struct TCGen5MMAScaleSharedToTmemConversion
     : public OpRewritePattern<TCGen5MMAScaledOp> {
   using OpRewritePattern<TCGen5MMAScaledOp>::OpRewritePattern;
 
-  // Create a tmem_copy of scales from shared memory to tmem. `rows` is the M or
-  // N of the MMA operation (for LHS or RHS respectively).
-  bool lowerScaleToTmem(OpOperand &operand, PatternRewriter &rewriter,
-                        int rows) const {
+  // Create a tmem_copy of scales from shared memory to tmem.
+  // Derives the TMEM row count from the SMEM shape rather than the MMA
+  // data operand shape, because in 2CTA mode the data operand is split
+  // but scales are not.
+  bool lowerScaleToTmem(OpOperand &operand, PatternRewriter &rewriter) const {
     Location loc = operand.getOwner()->getLoc();
     MLIRContext *context = operand.getOwner()->getContext();
     Attribute tensorMemorySpace = TensorMemorySpaceAttr::get(context);
@@ -68,7 +69,19 @@ struct TCGen5MMAScaleSharedToTmemConversion
     Type elType = oldType.getElementType();
     ttg::CGAEncodingAttr CGALayout = ttg::getCGALayout(oldType.getEncoding());
     auto CTASplitNum = CGALayout.getCTASplitNum();
-    // Distribute the scales across the rows of the MMA operation.
+    // Derive TMEM rows from the SMEM scale shape. The accepted 5D layout is
+    // [1, repRows, repCols, 2, 256] where rows = repRows * 128.
+    auto smemShape = oldType.getShape();
+    int64_t rows;
+    if (smemShape.size() == 5 && smemShape[0] == 1 && smemShape[3] == 2 &&
+        smemShape[4] == 256) {
+      // [1, repRows, repCols, 2, 256]
+      rows = smemShape[1] * 128;
+    } else {
+      // [repRows, repCols, 32, 16], [repRows, repCols, 2, 256],
+      // [repRows, repCols, 32, 4, 4], [repRows, repCols * 512]
+      rows = smemShape[0] * 128;
+    }
     SmallVector<int64_t> shape = {rows, numElems / rows};
     Attribute scaleEncoding = TensorMemoryScalesEncodingAttr::get(
         context, CTASplitNum[0], CTASplitNum[1]);
@@ -88,14 +101,12 @@ struct TCGen5MMAScaleSharedToTmemConversion
     MLIRContext *context = op->getContext();
     auto aScaleType = op.getAScale().getType();
     auto bScaleType = op.getBScale().getType();
-    int blockM = op.getBlockM();
-    int blockN = op.getBlockN();
     bool anyChanged = false;
     if (isa<ttg::SharedMemorySpaceAttr>(aScaleType.getMemorySpace())) {
-      anyChanged = lowerScaleToTmem(op.getAScaleMutable(), rewriter, blockM);
+      anyChanged = lowerScaleToTmem(op.getAScaleMutable(), rewriter);
     }
     if (isa<ttg::SharedMemorySpaceAttr>(bScaleType.getMemorySpace())) {
-      anyChanged = lowerScaleToTmem(op.getBScaleMutable(), rewriter, blockN);
+      anyChanged = lowerScaleToTmem(op.getBScaleMutable(), rewriter);
     }
     return LogicalResult::success(anyChanged);
   }

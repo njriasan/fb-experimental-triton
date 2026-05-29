@@ -1200,7 +1200,8 @@ static LogicalResult verifyScaleTMEMCopyShape(TMEMCopyOp op, MemDescType srcTy,
            << "scale tmem_copy requires an explicit packed i8 SMEM shape "
               "matching the rank-2 TMEM scale shape; accepted source shapes "
               "are [rows / 128, cols / 4, 32, 16], [rows / 128, cols / 4, "
-              "32, 4, 4], [1, rows / 128, cols / 4, 2, 256], or "
+              "32, 4, 4], [rows / 128, cols / 4, 2, 256], "
+              "[1, rows / 128, cols / 4, 2, 256], or "
               "[rows / 128, (cols / 4) * 512]";
   };
 
@@ -1219,6 +1220,7 @@ static LogicalResult verifyScaleTMEMCopyShape(TMEMCopyOp op, MemDescType srcTy,
   int64_t repCols = cols / 4;
   if (hasShape(srcTy, {repRows, repCols, 32, 16}) ||
       hasShape(srcTy, {repRows, repCols, 32, 4, 4}) ||
+      hasShape(srcTy, {repRows, repCols, 2, 256}) ||
       hasShape(srcTy, {1, repRows, repCols, 2, 256}) ||
       hasShape(srcTy, {repRows, repCols * 512}))
     return success();
